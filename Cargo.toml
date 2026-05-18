@@ -1,0 +1,41 @@
+[package]
+name = "nexus-audio"
+version = "2.4.1"
+edition = "2021"
+description = "Retro terminal music & audiobook player (Linux-first MusicBee replacement)"
+license = "MIT"
+default-run = "nexus-audio"
+
+[[bin]]
+name = "nexus-audio"
+path = "src/main.rs"
+
+# Phase 1 engine-selection gate. Run: cargo run --bin spike -- <audio-file> <seek-secs>
+[[bin]]
+name = "spike"
+path = "src/bin/spike.rs"
+
+[dependencies]
+eframe      = "0.29"
+egui        = "0.29"
+
+symphonia   = { version = "0.5", features = [
+    "mp3", "isomp4", "aac", "alac", "flac", "ogg", "vorbis", "pcm", "wav",
+] }
+cpal        = "0.15"
+rubato      = "0.15"
+
+lofty       = "0.21"
+rusqlite    = { version = "0.31", features = ["bundled"] }
+walkdir     = "2"
+uuid        = { version = "1", features = ["v4", "serde"] }
+rfd         = "0.14"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+chrono      = { version = "0.4", features = ["serde"] }
+dirs        = "5"
+anyhow      = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

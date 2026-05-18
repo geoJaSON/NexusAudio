@@ -1,0 +1,12 @@
+/target
+Cargo.lock
+# Local test audio (large, personal) and scratch logs
+/Sample_Files
+build.log
+# Machine-local Claude Code settings
+.claude/settings.local.json
+# Runtime data lives in the OS data dir, but ignore any local copies:
+/data
+*.db
+*.db-journal
+*.db-wal
