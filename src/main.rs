@@ -68,77 +68,24 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-/// Procedural window/taskbar icon — CRT phosphor look, no asset file: dark
-/// rounded tile, scanlines, green border, bold play triangle.
+/// Window/taskbar icon, decoded from `icon.ico` at the repo root (baked into
+/// the binary at compile time — same file the .exe embeds). Swap that file
+/// and rebuild to change the icon.
 fn app_icon() -> egui::IconData {
-    const S: usize = 256;
-    let bg = [2u8, 15, 4];
-    let green = [0u8, 255, 65];
-    let mut rgba = vec![0u8; S * S * 4];
-
-    let radius = S as f32 * 0.18;
-    let put = |buf: &mut [u8], x: usize, y: usize, c: [u8; 3], a: u8| {
-        let i = (y * S + x) * 4;
-        buf[i] = c[0];
-        buf[i + 1] = c[1];
-        buf[i + 2] = c[2];
-        buf[i + 3] = a;
-    };
-    // Rounded-rect corner mask.
-    let inside = |x: f32, y: f32| -> bool {
-        let (mut dx, mut dy) = (0.0f32, 0.0f32);
-        if x < radius {
-            dx = radius - x;
-        } else if x > S as f32 - radius {
-            dx = x - (S as f32 - radius);
-        }
-        if y < radius {
-            dy = radius - y;
-        } else if y > S as f32 - radius {
-            dy = y - (S as f32 - radius);
-        }
-        dx * dx + dy * dy <= radius * radius
-    };
-    // Play triangle vertices.
-    let (ax, ay) = (S as f32 * 0.37, S as f32 * 0.27);
-    let (bx, by) = (S as f32 * 0.37, S as f32 * 0.73);
-    let (cx, cy) = (S as f32 * 0.73, S as f32 * 0.50);
-    let sign = |px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32| {
-        (px - x2) * (y1 - y2) - (x1 - x2) * (py - y2)
-    };
-
-    for y in 0..S {
-        for x in 0..S {
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            if !inside(fx, fy) {
-                put(&mut rgba, x, y, bg, 0);
-                continue;
-            }
-            // Base + faint scanlines.
-            let mut col = bg;
-            if y % 6 < 1 {
-                col = [1, 9, 3];
-            }
-            // Green border ring.
-            let edge = (x as f32)
-                .min(y as f32)
-                .min((S - 1 - x) as f32)
-                .min((S - 1 - y) as f32);
-            if edge < 6.0 {
-                col = green;
-            }
-            // Play triangle (point-in-triangle).
-            let d1 = sign(fx, fy, ax, ay, bx, by);
-            let d2 = sign(fx, fy, bx, by, cx, cy);
-            let d3 = sign(fx, fy, cx, cy, ax, ay);
-            let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
-            let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
-            if !(has_neg && has_pos) {
-                col = green;
-            }
-            put(&mut rgba, x, y, col, 255);
-        }
+    let dir = ico::IconDir::read(std::io::Cursor::new(
+        include_bytes!("../icon.ico").as_slice(),
+    ))
+    .expect("icon.ico is a valid .ico");
+    // Largest entry → crispest source for the window/taskbar.
+    let entry = dir
+        .entries()
+        .iter()
+        .max_by_key(|e| e.width())
+        .expect("icon.ico has at least one image");
+    let img = entry.decode().expect("icon.ico entry decodes");
+    egui::IconData {
+        rgba: img.rgba_data().to_vec(),
+        width: img.width(),
+        height: img.height(),
     }
-
-    egui::IconData { rgba, width: S as u32, height: S as u32 }
 }
