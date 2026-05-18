@@ -75,16 +75,31 @@ fn include_font(rel: &str) -> Option<Vec<u8>> {
     std::fs::read(rel).ok()
 }
 
-/// Apply the green-on-black phosphor visuals to egui.
-pub fn apply_visuals(ctx: &egui::Context) {
+/// Darken an accent toward the background for hover/selection fills.
+fn shade(c: Color32, f: f32) -> Color32 {
+    Color32::from_rgb(
+        (c.r() as f32 * f) as u8,
+        (c.g() as f32 * f) as u8,
+        (c.b() as f32 * f) as u8,
+    )
+}
+
+/// Apply the phosphor-terminal visuals, using the user's accent + text colors
+/// (default phosphor green / dim green). Explicitly-colored UI bits still use
+/// the `CRT_*` constants until a full runtime-palette pass.
+pub fn apply_visuals(ctx: &egui::Context, accent: [u8; 3], text: [u8; 3]) {
+    let accent = Color32::from_rgb(accent[0], accent[1], accent[2]);
+    let text = Color32::from_rgb(text[0], text[1], text[2]);
+    let hover_fill = shade(accent, 0.18);
+
     let mut v = egui::Visuals::dark();
-    v.override_text_color = Some(CRT_DIM);
+    v.override_text_color = Some(text);
     v.panel_fill = CRT_BG;
     v.window_fill = CRT_PANEL;
     v.extreme_bg_color = CRT_BG;
-    v.faint_bg_color = Color32::from_rgba_unmultiplied(0, 255, 65, 12);
-    v.selection.bg_fill = Color32::from_rgba_unmultiplied(0, 255, 65, 40);
-    v.selection.stroke = Stroke::new(1.0, CRT_GREEN);
+    v.faint_bg_color = shade(accent, 0.10);
+    v.selection.bg_fill = shade(accent, 0.30);
+    v.selection.stroke = Stroke::new(1.0, accent);
     v.hyperlink_color = AMBER;
 
     for ws in [
@@ -97,18 +112,18 @@ pub fn apply_visuals(ctx: &egui::Context) {
         ws.bg_fill = CRT_PANEL;
         ws.weak_bg_fill = CRT_PANEL;
         ws.rounding = Rounding::ZERO;
-        ws.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 255, 65, 51));
-        ws.fg_stroke = Stroke::new(1.0, CRT_DIM);
+        ws.bg_stroke = Stroke::new(1.0, shade(accent, 0.25));
+        ws.fg_stroke = Stroke::new(1.0, text);
     }
-    // Hovered/active widgets (buttons, context-menu items) get the same dark
-    // green backdrop as list rows so hover is visible everywhere.
-    v.widgets.hovered.bg_fill = ROW_HOVER;
-    v.widgets.hovered.weak_bg_fill = ROW_HOVER;
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, CRT_GREEN);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, CRT_GREEN);
-    v.widgets.active.bg_fill = ROW_HOVER;
-    v.widgets.active.weak_bg_fill = ROW_HOVER;
-    v.widgets.active.fg_stroke = Stroke::new(1.0, CRT_GREEN);
+    // Hovered/active widgets (buttons, context-menu items) get an accent
+    // backdrop so hover is visible everywhere.
+    v.widgets.hovered.bg_fill = hover_fill;
+    v.widgets.hovered.weak_bg_fill = hover_fill;
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, accent);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, accent);
+    v.widgets.active.bg_fill = hover_fill;
+    v.widgets.active.weak_bg_fill = hover_fill;
+    v.widgets.active.fg_stroke = Stroke::new(1.0, accent);
 
     ctx.set_visuals(v);
 

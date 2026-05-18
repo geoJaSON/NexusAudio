@@ -237,6 +237,37 @@ impl Db {
         removed
     }
 
+    /// Delete audiobooks (and their chapters) whose path lives under any of
+    /// `dirs` — used when a watched audiobook folder is removed.
+    pub fn remove_audiobooks_under(&self, dirs: &[PathBuf]) -> usize {
+        if dirs.is_empty() {
+            return 0;
+        }
+        let rows: Vec<(String, String)> = match self
+            .conn
+            .prepare("SELECT id, path FROM audiobooks")
+        {
+            Ok(mut stmt) => stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .map(|it| it.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default(),
+            Err(_) => return 0,
+        };
+        let mut removed = 0;
+        for (id, p) in rows {
+            if dirs.iter().any(|d| PathBuf::from(&p).starts_with(d)) {
+                let _ = self
+                    .conn
+                    .execute("DELETE FROM chapters WHERE book_id = ?1", params![id]);
+                let _ = self
+                    .conn
+                    .execute("DELETE FROM audiobooks WHERE id = ?1", params![id]);
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// How many rows a query/search returns (for the scrollbar's virtual size).
     pub fn count(&self, search: &str) -> Result<i64> {
         if search.trim().is_empty() {

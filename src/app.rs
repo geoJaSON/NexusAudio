@@ -19,8 +19,8 @@ use crate::store::json_store;
 use crate::ui::player_bar::{self, NowPlaying, PlayerCmd};
 use crate::ui::theme::{self, AMBER, CRT_DIM, CRT_GREEN, CRT_MID, CRT_PANEL};
 use crate::ui::views::{
-    albums, artists, audiobooks as audiobooks_view, folders, playlists as playlists_view,
-    queue as queue_view, tracks, LibraryUi, ViewAction,
+    albums, artists, audiobooks as audiobooks_view, playlists as playlists_view,
+    queue as queue_view, settings as settings_view, tracks, LibraryUi, ViewAction,
 };
 use crate::ui::{sidebar, titlebar, View};
 
@@ -51,7 +51,6 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
-        theme::apply_visuals(&cc.egui_ctx);
 
         let data_dir = data_dir();
         let (db, db_path) = match &data_dir {
@@ -345,8 +344,14 @@ impl App {
                 }
             }
             ViewAction::RemoveFolder(p) => {
+                let key = p.display().to_string();
                 self.settings.music_folders.retain(|f| f != &p);
+                self.settings.folder_stats.remove(&key);
                 self.save_settings();
+                // Unwatching a folder evicts its tracks from the library.
+                self.db.remove_tracks_under(&[p]);
+                self.track_count = self.db.track_count().unwrap_or(0);
+                self.lib.invalidate();
             }
             ViewAction::ScanAll => self.start_scan(),
             ViewAction::Play { list, index, shuffle } => {
@@ -469,8 +474,22 @@ impl App {
                 }
             }
             ViewAction::RemoveAudiobookFolder(p) => {
+                let key = p.display().to_string();
                 self.settings.audiobook_folders.retain(|f| f != &p);
+                self.settings.folder_stats.remove(&key);
                 self.save_settings();
+                // Unwatching evicts those books; clear playing/pending if affected.
+                if self
+                    .current_book
+                    .as_ref()
+                    .map(|b| b.path.starts_with(&p))
+                    .unwrap_or(false)
+                {
+                    self.engine.stop();
+                    self.current_book = None;
+                }
+                self.pending_resume = None;
+                self.db.remove_audiobooks_under(&[p]);
             }
             ViewAction::ScanAudiobooks => self.start_ab_scan(),
             ViewAction::OpenAudiobook(id) => {
@@ -500,6 +519,13 @@ impl App {
                     Instant::now() + std::time::Duration::from_secs(m * 60)
                 });
             }
+            ViewAction::ClearQuickResume => {
+                self.resume = ResumeStore::default();
+                if let Some(dir) = &self.data_dir {
+                    self.resume.save(dir);
+                }
+            }
+            ViewAction::SettingsChanged => self.save_settings(),
         }
     }
 
@@ -685,6 +711,8 @@ impl eframe::App for App {
         self.poll_ab_scan();
         self.poll_playback();
         self.shortcuts(ctx);
+        // Idempotent; reflects live accent/text color changes from Settings.
+        theme::apply_visuals(ctx, self.settings.accent_color, self.settings.text_color);
 
         // Repaint while scanning or playing so progress/clock stay live.
         if self.scan_rx.is_some() || self.engine.is_playing() {
@@ -782,15 +810,14 @@ impl eframe::App for App {
                     sleep_left,
                 );
             }
-            View::Folders => {
-                view_action = folders::show(
+            View::Settings => {
+                view_action = settings_view::show(
                     ui,
-                    &self.settings,
+                    &mut self.settings,
                     self.scan_status.as_deref(),
                     ab_status.as_deref(),
                 );
             }
-            View::Settings => placeholder(ui, "SETTINGS", "Phase 7"),
         });
 
         // Resume dialog (modal-ish): offered when opening an in-progress book.
@@ -888,14 +915,6 @@ impl App {
             });
         });
     }
-}
-
-fn placeholder(ui: &mut egui::Ui, title: &str, phase: &str) {
-    ui.add_space(24.0);
-    ui.vertical_centered(|ui| {
-        ui.label(RichText::new(format!("[ {title} ]")).size(14.0).color(CRT_GREEN));
-        ui.label(RichText::new(format!("lands in {phase}")).size(11.0).color(CRT_MID));
-    });
 }
 
 fn panel_frame() -> egui::Frame {

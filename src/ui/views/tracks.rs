@@ -121,7 +121,8 @@ fn header_row(ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         cell(ui, 30.0, "#", CRT_MID, 9.0);
-        cell(ui, flex_width(ui), "TITLE / ARTIST", CRT_MID, 9.0);
+        cell(ui, flex_width(ui), "TITLE", CRT_MID, 9.0);
+        cell(ui, 160.0, "ARTIST", CRT_MID, 9.0);
         cell(ui, 150.0, "ALBUM", CRT_MID, 9.0);
         cell(ui, 90.0, "GENRE", CRT_MID, 9.0);
         cell(ui, 52.0, "TIME", CRT_MID, 9.0);
@@ -144,21 +145,8 @@ fn track_row(
         |ui| {
             ui.add_space(8.0);
             cell(ui, 30.0, &num.to_string(), CRT_MID, 10.0);
-
-            ui.vertical(|ui| {
-                let w = flex_width(ui);
-                ui.add_sized(
-                    [w, 16.0],
-                    egui::Label::new(RichText::new(&t.title).size(11.0).color(CRT_DIM))
-                        .truncate(),
-                );
-                ui.add_sized(
-                    [w, 12.0],
-                    egui::Label::new(RichText::new(&t.artist).size(10.0).color(CRT_MID))
-                        .truncate(),
-                );
-            });
-
+            cell(ui, flex_width(ui), &t.title, CRT_DIM, 11.0);
+            cell(ui, 160.0, &t.artist, CRT_MID, 10.0);
             cell(ui, 150.0, &t.album, CRT_MID, 10.0);
             cell(ui, 90.0, &t.genre, CRT_MID, 10.0);
             cell(ui, 52.0, &fmt_dur(t.duration_secs), CRT_MID, 10.0);
@@ -185,8 +173,8 @@ fn cell(ui: &mut egui::Ui, w: f32, text: &str, color: egui::Color32, size: f32) 
 
 fn flex_width(ui: &egui::Ui) -> f32 {
     // Content width (already excludes the +Q strip) minus the fixed columns
-    // (#, album, genre, time) and inter-cell padding.
-    (ui.available_width() - (30.0 + 150.0 + 90.0 + 52.0 + 40.0)).max(120.0)
+    // (#, artist, album, genre, time) and inter-cell padding.
+    (ui.available_width() - (30.0 + 160.0 + 150.0 + 90.0 + 52.0 + 40.0)).max(120.0)
 }
 
 fn fmt_dur(secs: f64) -> String {

@@ -10,6 +10,7 @@ pub mod audiobooks;
 pub mod folders;
 pub mod playlists;
 pub mod queue;
+pub mod settings;
 pub mod tracks;
 
 use std::path::PathBuf;
@@ -132,6 +133,9 @@ pub enum ViewAction {
     ChapterSeek(f64),
     SetSleepTimer(Option<u64>), // minutes; None = off
     ResumeLastBook,
+    ClearQuickResume,
+    /// A settings widget changed — persist + re-apply visuals.
+    SettingsChanged,
 }
 
 /// Per-row interaction: double-click or a context-menu pick.

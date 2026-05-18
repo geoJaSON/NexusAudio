@@ -487,12 +487,17 @@ cargo build --release     # release build
   audiobook dir is nested inside a music dir.)
 
 **Polish (next priorities):**
-- [ ] Move folder management (music + audiobook) into a real Settings view.
-- [ ] Settings: text + accent color pickers; current phosphor green is the default.
-- [ ] Settings: "clear quick-resume" control.
+- [x] Move folder management (music + audiobook) into a real Settings view.
+  Standalone Folders view/nav removed; `folder_section` reused by Settings.
+- [x] Settings: text + accent color pickers (default phosphor green) + RESET.
+  *Limited* per the agreed scope: drives egui Visuals (text/selection/hover/
+  strokes) via runtime palette; explicitly-`.color()`'d UI stays green until a
+  full palette pass. Applied every frame from settings (idempotent).
+- [x] Settings: "CLEAR QUICK-RESUME" control. Also added auto-scan toggle,
+  titlebar-EQ toggle, resume-interval slider.
 - [ ] True drag-and-drop reorder for playlists and the queue (replaces `^`/`v`).
-- [ ] Reorganize All-Tracks rows so Artist is its own column (like Album/Genre),
-  not stacked under the title.
+- [x] All-Tracks: Artist is its own column (TITLE | ARTIST | ALBUM | GENRE | TIME),
+  no longer stacked under the title.
 
 **Nice to have (eventually):**
 - [ ] Equalizer + presets in Settings (only if not disproportionately hard).

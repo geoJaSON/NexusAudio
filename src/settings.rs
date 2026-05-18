@@ -18,10 +18,18 @@ pub struct Settings {
     pub resume_save_interval_secs: u64,
     pub eq_enabled: bool,
     pub scanline_intensity: f32,
+    /// Accent (selection/hover/active strokes) and default text color.
+    /// Default = phosphor green / dim green. Note: explicitly-colored UI bits
+    /// stay green until a full runtime-palette pass.
+    pub accent_color: [u8; 3],
+    pub text_color: [u8; 3],
     /// Per-folder bookkeeping shown in the Folders view: last scan time and
     /// the file count found on that scan. Keyed by the folder's display path.
     pub folder_stats: HashMap<String, FolderStat>,
 }
+
+pub const DEFAULT_ACCENT: [u8; 3] = [0, 255, 65]; // CRT_GREEN
+pub const DEFAULT_TEXT: [u8; 3] = [0, 179, 44]; // CRT_DIM
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FolderStat {
@@ -38,6 +46,8 @@ impl Default for Settings {
             resume_save_interval_secs: 15,
             eq_enabled: true,
             scanline_intensity: 0.08,
+            accent_color: DEFAULT_ACCENT,
+            text_color: DEFAULT_TEXT,
             folder_stats: HashMap::new(),
         }
     }

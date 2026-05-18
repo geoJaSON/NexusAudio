@@ -1,5 +1,5 @@
-//! Folders — watched-directory manager for music *and* audiobooks. Read-only
-//! over Settings; mutations go back to the App as `ViewAction`s.
+//! Watched-directory section, reused by the Settings view for both music and
+//! audiobook folders. Read-only over Settings; mutations go back as `ViewAction`s.
 
 use eframe::egui::{self, RichText};
 
@@ -7,70 +7,12 @@ use super::ViewAction;
 use crate::settings::Settings;
 use crate::ui::theme::{AMBER, CRT_DIM, CRT_GREEN, CRT_MID};
 
-const SUPPORTED: &[&str] = &[
+pub const SUPPORTED: &[&str] = &[
     "MP3", "FLAC", "AAC", "OGG", "WAV", "AIFF", "M4A", "OPUS", "M4B",
 ];
 
-pub fn show(
-    ui: &mut egui::Ui,
-    settings: &Settings,
-    scan_status: Option<&str>,
-    ab_status: Option<&str>,
-) -> Option<ViewAction> {
-    let mut action = None;
-
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            // ---- MUSIC ----
-            if let Some(a) = folder_section(
-                ui,
-                "MUSIC DIRECTORIES",
-                &settings.music_folders,
-                settings,
-                scan_status,
-                ViewAction::AddMusicFolder,
-                ViewAction::ScanAll,
-                &ViewAction::RemoveFolder,
-            ) {
-                action = Some(a);
-            }
-
-            ui.add_space(18.0);
-
-            // ---- AUDIOBOOKS ----
-            if let Some(a) = folder_section(
-                ui,
-                "AUDIOBOOK DIRECTORIES",
-                &settings.audiobook_folders,
-                settings,
-                ab_status,
-                ViewAction::AddAudiobookFolder,
-                ViewAction::ScanAudiobooks,
-                &ViewAction::RemoveAudiobookFolder,
-            ) {
-                action = Some(a);
-            }
-
-            ui.add_space(18.0);
-            ui.horizontal(|ui| {
-                ui.add_space(10.0);
-                ui.label(RichText::new("SUPPORTED FORMATS").size(10.0).color(CRT_MID));
-            });
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(10.0);
-                for fmt in SUPPORTED {
-                    ui.label(RichText::new(format!(" {fmt} ")).size(9.0).color(CRT_DIM));
-                }
-            });
-        });
-
-    action
-}
-
 #[allow(clippy::too_many_arguments)]
-fn folder_section(
+pub fn folder_section(
     ui: &mut egui::Ui,
     title: &str,
     folders: &[std::path::PathBuf],
