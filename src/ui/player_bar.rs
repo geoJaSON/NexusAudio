@@ -62,7 +62,7 @@ pub fn show(
                     }
                     ui.label(RichText::new(sub).size(10.0).color(CRT_DIM));
                     let info = engine.info();
-                    let state = if engine.is_playing() { "▸ PLAYING" } else { "❚❚ PAUSED" };
+                    let state = if engine.is_playing() { "> PLAYING" } else { "|| PAUSED" };
                     ui.label(
                         RichText::new(format!(
                             "{state} · {} {} Hz",
@@ -86,33 +86,33 @@ pub fn show(
         // transport (centered-ish)
         ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
             ui.horizontal(|ui| {
-                if tbtn(ui, "⏮").clicked() {
+                if tbtn(ui, "|<").clicked() {
                     cmd = Some(PlayerCmd::Prev);
                 }
-                let play_lbl = if engine.is_playing() { "❚❚" } else { "▶" };
+                let play_lbl = if engine.is_playing() { "||" } else { ">" };
                 if tbtn(ui, play_lbl).clicked() {
                     cmd = Some(PlayerCmd::PlayPause);
                 }
-                if tbtn(ui, "⏭").clicked() {
+                if tbtn(ui, ">|").clicked() {
                     cmd = Some(PlayerCmd::Next);
                 }
-                if tbtn(ui, "⏹").clicked() {
+                if tbtn(ui, "[ ]").clicked() {
                     cmd = Some(PlayerCmd::Stop);
                 }
                 let sh = if shuffle { CRT_GREEN } else { CRT_MID };
                 if ui
-                    .button(RichText::new("⇄").size(11.0).color(sh))
+                    .button(RichText::new("SHUF").size(10.0).color(sh))
                     .clicked()
                 {
                     cmd = Some(PlayerCmd::ToggleShuffle);
                 }
                 let (rsym, rcol) = match repeat {
-                    RepeatMode::None => ("↻", CRT_MID),
-                    RepeatMode::All => ("↻", CRT_GREEN),
-                    RepeatMode::One => ("↺¹", CRT_GREEN),
+                    RepeatMode::None => ("RPT", CRT_MID),
+                    RepeatMode::All => ("RPT", CRT_GREEN),
+                    RepeatMode::One => ("RP1", CRT_GREEN),
                 };
                 if ui
-                    .button(RichText::new(rsym).size(11.0).color(rcol))
+                    .button(RichText::new(rsym).size(10.0).color(rcol))
                     .clicked()
                 {
                     cmd = Some(PlayerCmd::CycleRepeat);

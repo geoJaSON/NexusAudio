@@ -11,6 +11,7 @@ pub fn show(ui: &mut egui::Ui, current: &mut View) {
     nav_item(ui, current, View::Tracks, "ALL TRACKS");
     nav_item(ui, current, View::Albums, "ALBUMS");
     nav_item(ui, current, View::Artists, "ARTISTS");
+    nav_item(ui, current, View::Queue, "QUEUE");
     nav_item(ui, current, View::Folders, "FOLDERS");
 
     ui.add_space(10.0);

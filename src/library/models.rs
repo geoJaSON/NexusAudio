@@ -91,7 +91,7 @@ pub struct QueueEntry {
     pub source: QueueSource,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepeatMode {
     #[default]
     None,

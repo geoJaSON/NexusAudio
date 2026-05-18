@@ -7,6 +7,7 @@
 pub mod albums;
 pub mod artists;
 pub mod folders;
+pub mod queue;
 pub mod tracks;
 
 use std::path::PathBuf;
@@ -25,36 +26,68 @@ pub fn list_row(
     height: f32,
     add: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
+    list_row_actions(ui, height, 0.0, add, |_| {})
+}
+
+/// As [`list_row`], plus a right-aligned `actions_w`-wide strip rendered by
+/// `trailing`. That strip is *excluded* from the row's hit rect, so inline
+/// buttons there stay clickable (the row's whole-row `ui.interact` would
+/// otherwise sit on top of them — the same occlusion rule, inverted).
+pub fn list_row_actions(
+    ui: &mut egui::Ui,
+    height: f32,
+    actions_w: f32,
+    add: impl FnOnce(&mut egui::Ui),
+    trailing: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
     // Reserve an exact-size band (also keeps a virtualized `show_rows` stride
     // consistent). The hit area is then claimed with a single `ui.interact`
-    // AFTER the content is drawn: the row's interaction is registered last so
-    // it wins egui's occlusion order over the inner Labels. Taking the
-    // response from the allocation instead (the previous approach) loses every
-    // pixel a Label covers — leaving only thin label-free slivers live.
+    // AFTER the content is drawn so it wins egui's occlusion order over the
+    // inner Labels — minus the trailing strip, which owns its own widgets.
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, height), egui::Sense::hover());
+    let hit_rect = if actions_w > 0.0 {
+        egui::Rect::from_min_max(
+            rect.min,
+            egui::pos2(rect.max.x - actions_w, rect.max.y),
+        )
+    } else {
+        rect
+    };
 
     if ui.is_rect_visible(rect) {
-        // Highlight driven by pointer containment, not widget hover, so it is
-        // independent of what the child lays on top.
-        if ui.rect_contains_pointer(rect) {
+        if ui.rect_contains_pointer(hit_rect) {
             ui.painter().rect_filled(
                 rect,
                 0.0,
                 egui::Color32::from_rgba_unmultiplied(0, 255, 65, 18),
             );
         }
-        let mut child = ui.new_child(
+        let mut content = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(rect)
+                .max_rect(hit_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        child.set_clip_rect(rect.intersect(ui.clip_rect()));
-        add(&mut child);
+        content.set_clip_rect(hit_rect.intersect(ui.clip_rect()));
+        add(&mut content);
+
+        if actions_w > 0.0 {
+            let arect = egui::Rect::from_min_max(
+                egui::pos2(rect.max.x - actions_w, rect.min.y),
+                rect.max,
+            );
+            let mut acts = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(arect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            );
+            acts.set_clip_rect(arect.intersect(ui.clip_rect()));
+            trailing(&mut acts);
+        }
     }
 
     let id = ui.make_persistent_id(("nexus_list_row", rect.min.y.to_bits()));
-    let resp = ui.interact(rect, id, egui::Sense::click());
+    let resp = ui.interact(hit_rect, id, egui::Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -67,8 +100,63 @@ pub enum ViewAction {
     AddMusicFolder,
     RemoveFolder(PathBuf),
     ScanAll,
-    /// Play `list`, starting at `index`, replacing the queue.
-    Play { list: Vec<Track>, index: usize },
+    /// Play `list`, starting at `index`, replacing the queue (optionally shuffled).
+    Play { list: Vec<Track>, index: usize, shuffle: bool },
+    /// Add one track to the queue (`next` = jump to position 1).
+    Enqueue { track: Track, next: bool },
+    /// Queue-panel operations (indices are into `upcoming`).
+    QueueJump(usize),
+    QueueRemove(usize),
+    QueueMove { i: usize, up: bool },
+    QueueClear,
+}
+
+/// Per-row interaction: double-click or a context-menu pick.
+#[derive(Clone, Copy)]
+pub enum RowAction {
+    Play,
+    PlayNext,
+    AddToQueue,
+}
+
+/// Standard track-row affordance: double-click = play, right-click = menu.
+pub fn row_actions(resp: &egui::Response) -> Option<RowAction> {
+    let mut act = None;
+    if resp.double_clicked() {
+        act = Some(RowAction::Play);
+    }
+    resp.context_menu(|ui| {
+        if ui.button(">   PLAY").clicked() {
+            act = Some(RowAction::Play);
+            ui.close_menu();
+        }
+        if ui.button(">>  PLAY NEXT").clicked() {
+            act = Some(RowAction::PlayNext);
+            ui.close_menu();
+        }
+        if ui.button("+  ADD TO QUEUE").clicked() {
+            act = Some(RowAction::AddToQueue);
+            ui.close_menu();
+        }
+    });
+    act
+}
+
+/// Map a drill-down list pick into a `ViewAction` (Play replaces the queue
+/// with the whole list; the others enqueue just that track).
+pub fn list_action(list: Vec<Track>, pick: Option<(usize, RowAction)>) -> Option<ViewAction> {
+    let (index, a) = pick?;
+    Some(match a {
+        RowAction::Play => ViewAction::Play { list, index, shuffle: false },
+        RowAction::PlayNext => ViewAction::Enqueue {
+            track: list.get(index)?.clone(),
+            next: true,
+        },
+        RowAction::AddToQueue => ViewAction::Enqueue {
+            track: list.get(index)?.clone(),
+            next: false,
+        },
+    })
 }
 
 /// Persistent state shared across the library views (search box, sort, the

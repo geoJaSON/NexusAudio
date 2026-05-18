@@ -438,11 +438,13 @@ cargo build --release     # release build
 - Headless harness kept: `nexus-audio --play-smoke <file> [start]`.
 - Double-click any track (All Tracks / Album / Artist drill-down) builds the queue from that list and plays; auto-advances on track end per repeat mode.
 
-### Phase 4 — Queue UI
-- [ ] `ui/views/queue.rs` — now playing / up next / history.
-- [ ] Right-click context menus (Play, Play Next, Add to Queue, Add to Playlist).
-- [ ] Drag-and-drop reorder.
-- [ ] Queue persistence (`queue.json`).
+### Phase 4 — Queue UI — COMPLETE (2026-05-18, user-verified ✓)
+- [x] `ui/views/queue.rs` — Now Playing / Up Next (per-row jump/remove/move) / Recently Played (last 20). New QUEUE sidebar entry.
+- [x] Right-click context menus on track rows (All Tracks + Album/Artist drill-down): Play / Play Next / Add to Queue. (Add to Playlist lands in Phase 5.)
+- [x] Reorder via ▴/▾ controls. (True drag-and-drop deferred — carry-over; up/down is robust and avoids an egui-dnd dependency.)
+- [x] Queue persistence — `queue.json` snapshot (items/order/cursor/repeat/shuffle), atomic save on every queue change + exit, restored idle on launch.
+- Note: `list_row`'s full-row interact deliberately NOT used for queue rows (it would occlude their inline buttons — same occlusion rule, inverted).
+- Post-Phase-4 round (user-verified ✓): all tofu glyphs → ASCII (on-theme for a terminal); `list_row_actions` adds an excluded trailing strip; inline `+Q` add-to-queue on track rows (All Tracks + drill-downs); Play All / Shuffle All on album & artist rows and drill headers; shuffle plumbed through `ViewAction::Play`.
 
 ### Phase 5 — Playlists
 - [ ] `playlists/models.rs` — CRUD.

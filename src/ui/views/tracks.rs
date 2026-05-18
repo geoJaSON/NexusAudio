@@ -72,7 +72,8 @@ pub fn show(ui: &mut egui::Ui, db: &Db, state: &mut LibraryUi) -> Option<ViewAct
         return action;
     }
 
-    let mut clicked_global: Option<usize> = None;
+    // (RowAction, global index, the track) captured during the row pass.
+    let mut hit: Option<(super::RowAction, usize, crate::library::models::Track)> = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show_rows(ui, ROW_H, total, |ui, range| {
@@ -81,21 +82,29 @@ pub fn show(ui: &mut egui::Ui, db: &Db, state: &mut LibraryUi) -> Option<ViewAct
             let page = state.page(db, offset, limit).to_vec();
             for (i, t) in page.iter().enumerate() {
                 let num = range.start + i + 1;
-                if track_row(ui, num, t) {
-                    clicked_global = Some(range.start + i);
+                let (resp, add_q) = track_row(ui, num, t);
+                if add_q {
+                    hit = Some((super::RowAction::AddToQueue, range.start + i, t.clone()));
+                } else if let Some(a) = super::row_actions(&resp) {
+                    hit = Some((a, range.start + i, t.clone()));
                 }
             }
         });
 
-    if let Some(global) = clicked_global {
-        // Build the play queue from the current filtered/sorted view so
-        // next/prev are meaningful, then start at the clicked row.
-        let list = db
-            .tracks_page(&state.search, state.sort, PLAY_CAP, 0)
-            .unwrap_or_default();
-        if global < list.len() {
-            action = Some(ViewAction::Play { list, index: global });
-        }
+    if let Some((a, global, track)) = hit {
+        action = Some(match a {
+            super::RowAction::Play => {
+                // Build the queue from the current filtered/sorted view so
+                // next/prev are meaningful, then start at the clicked row.
+                let list = db
+                    .tracks_page(&state.search, state.sort, PLAY_CAP, 0)
+                    .unwrap_or_default();
+                let index = global.min(list.len().saturating_sub(1));
+                ViewAction::Play { list, index, shuffle: false }
+            }
+            super::RowAction::PlayNext => ViewAction::Enqueue { track, next: true },
+            super::RowAction::AddToQueue => ViewAction::Enqueue { track, next: false },
+        });
     }
     action
 }
@@ -105,39 +114,58 @@ fn header_row(ui: &mut egui::Ui) {
         ui.add_space(8.0);
         cell(ui, 30.0, "#", CRT_MID, 9.0);
         cell(ui, flex_width(ui), "TITLE / ARTIST", CRT_MID, 9.0);
-        cell(ui, 160.0, "ALBUM", CRT_MID, 9.0);
+        cell(ui, 150.0, "ALBUM", CRT_MID, 9.0);
         cell(ui, 90.0, "GENRE", CRT_MID, 9.0);
-        cell(ui, 56.0, "TIME", CRT_MID, 9.0);
+        cell(ui, 52.0, "TIME", CRT_MID, 9.0);
+        ui.add_space(40.0); // aligns with the rows' +Q action strip
     });
 }
 
-/// Returns true on double-click (play this track).
-fn track_row(ui: &mut egui::Ui, num: usize, t: &crate::library::models::Track) -> bool {
-    let row = super::list_row(ui, ROW_H, |ui| {
-        ui.add_space(8.0);
-        cell(ui, 30.0, &num.to_string(), CRT_MID, 10.0);
+/// Renders one row. Returns the row response (double-click / context menu)
+/// and whether the inline `+Q` add-to-queue button was clicked.
+fn track_row(
+    ui: &mut egui::Ui,
+    num: usize,
+    t: &crate::library::models::Track,
+) -> (egui::Response, bool) {
+    let mut add_q = false;
+    let row = super::list_row_actions(
+        ui,
+        ROW_H,
+        40.0,
+        |ui| {
+            ui.add_space(8.0);
+            cell(ui, 30.0, &num.to_string(), CRT_MID, 10.0);
 
-        ui.vertical(|ui| {
-            let w = flex_width(ui);
-            ui.add_sized(
-                [w, 16.0],
-                egui::Label::new(RichText::new(&t.title).size(11.0).color(CRT_DIM))
-                    .truncate(),
-            );
-            ui.add_sized(
-                [w, 12.0],
-                egui::Label::new(RichText::new(&t.artist).size(10.0).color(CRT_MID))
-                    .truncate(),
-            );
-        });
+            ui.vertical(|ui| {
+                let w = flex_width(ui);
+                ui.add_sized(
+                    [w, 16.0],
+                    egui::Label::new(RichText::new(&t.title).size(11.0).color(CRT_DIM))
+                        .truncate(),
+                );
+                ui.add_sized(
+                    [w, 12.0],
+                    egui::Label::new(RichText::new(&t.artist).size(10.0).color(CRT_MID))
+                        .truncate(),
+                );
+            });
 
-        cell(ui, 160.0, &t.album, CRT_MID, 10.0);
-        cell(ui, 90.0, &t.genre, CRT_MID, 10.0);
-        cell(ui, 56.0, &fmt_dur(t.duration_secs), CRT_MID, 10.0);
-    });
-
-    let _ = CRT_GREEN;
-    row.double_clicked()
+            cell(ui, 150.0, &t.album, CRT_MID, 10.0);
+            cell(ui, 90.0, &t.genre, CRT_MID, 10.0);
+            cell(ui, 52.0, &fmt_dur(t.duration_secs), CRT_MID, 10.0);
+        },
+        |ui| {
+            if ui
+                .button(RichText::new("+Q").size(10.0).color(CRT_GREEN))
+                .on_hover_text("Add to queue")
+                .clicked()
+            {
+                add_q = true;
+            }
+        },
+    );
+    (row, add_q)
 }
 
 fn cell(ui: &mut egui::Ui, w: f32, text: &str, color: egui::Color32, size: f32) {
@@ -148,8 +176,9 @@ fn cell(ui: &mut egui::Ui, w: f32, text: &str, color: egui::Color32, size: f32) 
 }
 
 fn flex_width(ui: &egui::Ui) -> f32 {
-    // Total width minus the fixed columns and paddings.
-    (ui.available_width() - (30.0 + 160.0 + 90.0 + 56.0 + 48.0)).max(120.0)
+    // Content width (already excludes the +Q strip) minus the fixed columns
+    // (#, album, genre, time) and inter-cell padding.
+    (ui.available_width() - (30.0 + 150.0 + 90.0 + 52.0 + 40.0)).max(120.0)
 }
 
 fn fmt_dur(secs: f64) -> String {

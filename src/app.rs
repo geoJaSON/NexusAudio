@@ -8,11 +8,12 @@ use eframe::egui::{self, RichText};
 use crate::library::db::Db;
 use crate::library::scanner::{self, ScanMsg};
 use crate::player::engine::Engine;
-use crate::player::queue::Queue;
+use crate::player::queue::{Queue, QueueSnapshot};
 use crate::settings::Settings;
+use crate::store::json_store;
 use crate::ui::player_bar::{self, PlayerCmd};
 use crate::ui::theme::{self, AMBER, CRT_DIM, CRT_GREEN, CRT_MID, CRT_PANEL};
-use crate::ui::views::{albums, artists, folders, tracks, LibraryUi, ViewAction};
+use crate::ui::views::{albums, artists, folders, queue as queue_view, tracks, LibraryUi, ViewAction};
 use crate::ui::{sidebar, titlebar, View};
 
 pub struct App {
@@ -67,10 +68,23 @@ impl App {
             engine: Engine::new(),
             queue: Queue::default(),
         };
+        // Restore the saved queue (list + cursor + modes), idle until played.
+        if let Some(dir) = &app.data_dir {
+            let snap: QueueSnapshot = json_store::load_or_default(&dir.join("queue.json"));
+            app.queue = Queue::restore(snap);
+        }
         if app.settings.auto_scan_on_startup && !app.settings.music_folders.is_empty() {
             app.start_scan();
         }
         app
+    }
+
+    fn save_queue(&self) {
+        if let Some(dir) = &self.data_dir {
+            if let Err(e) = json_store::save(&dir.join("queue.json"), &self.queue.snapshot()) {
+                eprintln!("queue save failed: {e}");
+            }
+        }
     }
 
     fn start_scan(&mut self) {
@@ -165,9 +179,39 @@ impl App {
                 self.save_settings();
             }
             ViewAction::ScanAll => self.start_scan(),
-            ViewAction::Play { list, index } => {
+            ViewAction::Play { list, index, shuffle } => {
                 self.queue.set(list, index);
+                if shuffle != self.queue.shuffle {
+                    self.queue.toggle_shuffle();
+                }
                 self.play_current();
+                self.save_queue();
+            }
+            ViewAction::Enqueue { track, next } => {
+                if next {
+                    self.queue.play_next(track);
+                } else {
+                    self.queue.enqueue(track);
+                }
+                self.save_queue();
+            }
+            ViewAction::QueueJump(i) => {
+                if self.queue.jump_upcoming(i).is_some() {
+                    self.play_current();
+                    self.save_queue();
+                }
+            }
+            ViewAction::QueueRemove(i) => {
+                self.queue.remove_upcoming(i);
+                self.save_queue();
+            }
+            ViewAction::QueueMove { i, up } => {
+                self.queue.move_upcoming(i, up);
+                self.save_queue();
+            }
+            ViewAction::QueueClear => {
+                self.queue.clear_upcoming();
+                self.save_queue();
             }
         }
     }
@@ -210,6 +254,7 @@ impl App {
             if self.queue.next().is_some() {
                 self.play_current();
             }
+            self.save_queue();
         }
     }
 
@@ -304,6 +349,7 @@ impl eframe::App for App {
             View::Tracks => view_action = tracks::show(ui, &self.db, &mut self.lib),
             View::Albums => view_action = albums::show(ui, &self.db, &mut self.lib),
             View::Artists => view_action = artists::show(ui, &self.db, &mut self.lib),
+            View::Queue => view_action = queue_view::show(ui, &self.queue),
             View::Folders => {
                 view_action =
                     folders::show(ui, &self.settings, self.scan_status.as_deref());
@@ -322,6 +368,7 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
         self.save_settings();
+        self.save_queue();
     }
 }
 
@@ -352,7 +399,7 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new("SYS OK").size(9.0).color(AMBER));
-                ui.label(RichText::new("█").size(9.0).color(CRT_GREEN));
+                ui.label(RichText::new("#").size(9.0).color(CRT_GREEN));
             });
         });
     }

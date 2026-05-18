@@ -2,6 +2,8 @@
 //! The engine plays whatever `current()` points at; the App advances on track
 //! end or transport input. The Phase 4 queue UI is built on top of this.
 
+use serde::{Deserialize, Serialize};
+
 use crate::library::models::{RepeatMode, Track};
 
 #[derive(Default)]
@@ -15,17 +17,22 @@ pub struct Queue {
     pub shuffle: bool,
 }
 
+/// Serializable snapshot for queue.json (save on exit / restore on launch).
+#[derive(Default, Serialize, Deserialize)]
+pub struct QueueSnapshot {
+    items: Vec<Track>,
+    order: Vec<usize>,
+    pos: Option<usize>,
+    repeat: RepeatMode,
+    shuffle: bool,
+}
+
 impl Queue {
-    /// Replace the queue with `tracks`, starting playback at `start`.
+    // ---- construction / bulk ----
+
     pub fn set(&mut self, tracks: Vec<Track>, start: usize) {
         self.items = tracks;
         self.rebuild_order(Some(start));
-    }
-
-    pub fn append(&mut self, t: Track) {
-        let idx = self.items.len();
-        self.items.push(t);
-        self.order.push(idx);
     }
 
     pub fn clear(&mut self) {
@@ -38,14 +45,15 @@ impl Queue {
         self.items.is_empty()
     }
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.order.len()
     }
+
+    // ---- cursor / navigation ----
 
     pub fn current(&self) -> Option<&Track> {
         self.pos.and_then(|p| self.order.get(p)).map(|&i| &self.items[i])
     }
 
-    /// Advance per repeat mode. Returns the new current track, if any.
     pub fn next(&mut self) -> Option<&Track> {
         let n = self.order.len();
         if n == 0 {
@@ -62,7 +70,6 @@ impl Queue {
         self.current()
     }
 
-    /// Step back one (no repeat wrap). Restart-vs-prev is the caller's call.
     pub fn prev(&mut self) -> Option<&Track> {
         self.pos = match self.pos {
             Some(p) if p > 0 => Some(p - 1),
@@ -71,9 +78,87 @@ impl Queue {
         self.current()
     }
 
+    /// Jump straight to the Nth upcoming entry (0 = the next one).
+    pub fn jump_upcoming(&mut self, i: usize) -> Option<&Track> {
+        if let Some(p) = self.pos {
+            let target = p + 1 + i;
+            if target < self.order.len() {
+                self.pos = Some(target);
+            }
+        } else if i < self.order.len() {
+            self.pos = Some(i);
+        }
+        self.current()
+    }
+
+    // ---- views for the queue panel ----
+
+    /// Upcoming tracks in play order (after the cursor).
+    pub fn upcoming(&self) -> Vec<&Track> {
+        let start = self.pos.map(|p| p + 1).unwrap_or(0);
+        self.order[start.min(self.order.len())..]
+            .iter()
+            .map(|&i| &self.items[i])
+            .collect()
+    }
+
+    /// Already-played tracks, oldest→newest (before the cursor).
+    pub fn history(&self) -> Vec<&Track> {
+        let end = self.pos.unwrap_or(0);
+        self.order[..end.min(self.order.len())]
+            .iter()
+            .map(|&i| &self.items[i])
+            .collect()
+    }
+
+    // ---- mutation ----
+
+    /// Append to the very end of the play order.
+    pub fn enqueue(&mut self, t: Track) {
+        let idx = self.items.len();
+        self.items.push(t);
+        self.order.push(idx);
+        if self.pos.is_none() {
+            self.pos = Some(0);
+        }
+    }
+
+    /// Insert so it plays immediately after the current track.
+    pub fn play_next(&mut self, t: Track) {
+        let idx = self.items.len();
+        self.items.push(t);
+        let at = self.pos.map(|p| p + 1).unwrap_or(0);
+        self.order.insert(at.min(self.order.len()), idx);
+        if self.pos.is_none() {
+            self.pos = Some(0);
+        }
+    }
+
+    pub fn remove_upcoming(&mut self, i: usize) {
+        let start = self.pos.map(|p| p + 1).unwrap_or(0);
+        let at = start + i;
+        if at < self.order.len() {
+            self.order.remove(at); // item left orphaned in `items` — harmless
+        }
+    }
+
+    pub fn clear_upcoming(&mut self) {
+        let start = self.pos.map(|p| p + 1).unwrap_or(0);
+        self.order.truncate(start.min(self.order.len()));
+    }
+
+    /// Move an upcoming entry up (toward now-playing) or down.
+    pub fn move_upcoming(&mut self, i: usize, up: bool) {
+        let start = self.pos.map(|p| p + 1).unwrap_or(0);
+        let a = start + i;
+        let b = if up { a.wrapping_sub(1) } else { a + 1 };
+        if a < self.order.len() && b >= start && b < self.order.len() {
+            self.order.swap(a, b);
+        }
+    }
+
     pub fn toggle_shuffle(&mut self) {
         self.shuffle = !self.shuffle;
-        // Keep the currently-playing item as the new cursor anchor.
         let cur_item = self.pos.and_then(|p| self.order.get(p)).copied();
         self.rebuild_order_keeping(cur_item);
     }
@@ -85,6 +170,28 @@ impl Queue {
             RepeatMode::One => RepeatMode::None,
         };
     }
+
+    // ---- persistence ----
+
+    pub fn snapshot(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            items: self.items.clone(),
+            order: self.order.clone(),
+            pos: self.pos,
+            repeat: self.repeat.clone(),
+            shuffle: self.shuffle,
+        }
+    }
+
+    pub fn restore(snap: QueueSnapshot) -> Self {
+        // Guard against a hand-edited / stale file: drop out-of-range indices.
+        let n = snap.items.len();
+        let order: Vec<usize> = snap.order.into_iter().filter(|&i| i < n).collect();
+        let pos = snap.pos.filter(|&p| p < order.len());
+        Self { items: snap.items, order, pos, repeat: snap.repeat, shuffle: snap.shuffle }
+    }
+
+    // ---- internals ----
 
     fn rebuild_order(&mut self, start_item: Option<usize>) {
         self.order = (0..self.items.len()).collect();

@@ -69,7 +69,7 @@ pub fn show(
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
                     let (mark, mc) = if exists {
-                        ("▸", CRT_GREEN)
+                        (">", CRT_GREEN)
                     } else {
                         ("!", AMBER)
                     };
@@ -95,7 +95,7 @@ pub fn show(
                     }
 
                     if ui
-                        .button(RichText::new("✕").size(9.0).color(CRT_MID))
+                        .button(RichText::new("x").size(9.0).color(CRT_MID))
                         .clicked()
                     {
                         action = Some(ViewAction::RemoveFolder(folder.clone()));
