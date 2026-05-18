@@ -17,6 +17,7 @@ Locked decisions (user-confirmed, do not relitigate):
 - **Music seeking is best-effort / low priority. Audiobook auto-resume is THE critical correctness requirement** and the project's acceptance test. Resume lands in Phase 3, not deferred.
 - **No playback speed control** — out of scope; no time-stretch subsystem. No tokio.
 - **Tag editing deferred to Phase 8 (optional).** File is canonical for tags; DB is a cache keyed by (path, mtime, size). `lofty` write capability retained so write-back stays possible.
+- **De-scoped features (user, 2026-05-18) — do NOT build unless reversed:** command palette, scanline overlay, animated EQ bars, mockup-style Settings *panel* (a functional Settings *view* IS wanted), track ratings, play-count. Full prioritized backlog lives in the plan's "Phase 7+ — User Backlog" section. Next actionable: fix MP3 audiobooks leaking into All-Tracks (music scanner must exclude `audiobook_folders`).
 - **No cover art — OUT OF SCOPE (user decision, 2026-05-18).** Albums view stays text/ASCII only. User explicitly wants to keep it simple. Do not add image rendering; the `egui_extras` image feature can stay unused. Reviewed the Phase 1 CRT shell and Phase 2 library views: user reaction "looks amazing so far."
 
 **Why:** these reshaped the original plan significantly; re-deriving them wastes a turn.

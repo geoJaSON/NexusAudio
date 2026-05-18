@@ -225,6 +225,7 @@ impl App {
         self.scan_rx = Some(scanner::spawn_scan(
             db_path,
             self.settings.music_folders.clone(),
+            self.settings.audiobook_folders.clone(),
         ));
     }
 

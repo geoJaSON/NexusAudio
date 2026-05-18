@@ -205,6 +205,38 @@ impl Db {
         Ok(removed)
     }
 
+    /// Delete tracks whose file lives under any of `dirs` (used to evict
+    /// audiobook MP3s that leaked into the music library before exclusion).
+    pub fn remove_tracks_under(&self, dirs: &[PathBuf]) -> usize {
+        if dirs.is_empty() {
+            return 0;
+        }
+        let rows: Vec<(String, String)> = match self
+            .conn
+            .prepare("SELECT id, path FROM tracks")
+        {
+            Ok(mut stmt) => stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .map(|it| it.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default(),
+            Err(_) => return 0,
+        };
+        let mut removed = 0;
+        for (id, p) in rows {
+            let pb = PathBuf::from(&p);
+            if dirs.iter().any(|d| pb.starts_with(d)) {
+                let _ = self
+                    .conn
+                    .execute("DELETE FROM tracks WHERE id = ?1", params![id]);
+                let _ = self
+                    .conn
+                    .execute("DELETE FROM tracks_fts WHERE track_id = ?1", params![id]);
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// How many rows a query/search returns (for the scrollbar's virtual size).
     pub fn count(&self, search: &str) -> Result<i64> {
         if search.trim().is_empty() {

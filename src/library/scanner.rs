@@ -27,9 +27,15 @@ pub enum ScanMsg {
     Failed(String),
 }
 
-/// Spawn an incremental scan of `folders` into the DB at `db_path`. Returns a
-/// receiver the UI polls (non-blocking) each frame.
-pub fn spawn_scan(db_path: PathBuf, folders: Vec<PathBuf>) -> Receiver<ScanMsg> {
+/// Spawn an incremental scan of `folders` into the DB at `db_path`. Files
+/// under any `exclude` directory (the watched audiobook folders) are skipped
+/// so audiobook MP3s never enter the music library — and any that leaked in
+/// from earlier scans are purged.
+pub fn spawn_scan(
+    db_path: PathBuf,
+    folders: Vec<PathBuf>,
+    exclude: Vec<PathBuf>,
+) -> Receiver<ScanMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let db = match Db::open(&db_path) {
@@ -40,12 +46,17 @@ pub fn spawn_scan(db_path: PathBuf, folders: Vec<PathBuf>) -> Receiver<ScanMsg> 
             }
         };
 
+        // Drop any previously-leaked tracks that now live under an audiobook
+        // folder (e.g. the folder was added as an audiobook dir after a scan).
+        let _ = db.remove_tracks_under(&exclude);
+
         // Pass 1: enumerate candidate files so progress has a real total.
+        let is_excluded = |p: &std::path::Path| exclude.iter().any(|d| p.starts_with(d));
         let mut files: Vec<PathBuf> = Vec::new();
         for root in &folders {
             for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
                 let p = entry.path();
-                if entry.file_type().is_file() && is_music(p) {
+                if entry.file_type().is_file() && is_music(p) && !is_excluded(p) {
                     files.push(p.to_path_buf());
                 }
             }

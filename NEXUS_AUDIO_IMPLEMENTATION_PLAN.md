@@ -476,12 +476,36 @@ cargo build --release     # release build
 - [ ] Chapter navigation panel.
 - [ ] Sleep timer.
 
-### Phase 7 — Polish
-- [ ] Command palette (`:` key).
-- [ ] Scanline overlay rendering + intensity setting.
-- [ ] Animated EQ bars (titlebar).
-- [ ] Settings panel + color theme switcher.
-- [ ] Track ratings (1–5) and play-count tracking.
+### Phase 7+ — User Backlog (captured 2026-05-18; supersedes the old Phase 7)
+
+**Bug — FIXED (2026-05-18, pending user re-scan check):**
+- [x] MP3 audiobooks appeared in All-Tracks. Fixed: `scanner::spawn_scan` now
+  takes an `exclude` list (the audiobook folders); files under any of them are
+  skipped, and `db.remove_tracks_under` purges rows that leaked from earlier
+  scans. Runs at the start of every music scan. (Cosmetic follow-up: the
+  per-folder file tally in the Folders view may still over-count if an
+  audiobook dir is nested inside a music dir.)
+
+**Polish (next priorities):**
+- [ ] Move folder management (music + audiobook) into a real Settings view.
+- [ ] Settings: text + accent color pickers; current phosphor green is the default.
+- [ ] Settings: "clear quick-resume" control.
+- [ ] True drag-and-drop reorder for playlists and the queue (replaces `^`/`v`).
+- [ ] Reorganize All-Tracks rows so Artist is its own column (like Album/Genre),
+  not stacked under the title.
+
+**Nice to have (eventually):**
+- [ ] Equalizer + presets in Settings (only if not disproportionately hard).
+- [ ] Tag editing (this is the old Phase 8 — keep §4 "file is canonical" design).
+- [ ] Genres as their own library section.
+- [ ] Queue as a right-side slide-out/pop-out: show session play history, and
+  "create playlist from queue".
+- [ ] Standard user preferences/config in Settings.
+
+**Explicitly de-scoped (do NOT build unless the user reverses this):**
+command palette · scanline overlay · animated EQ bars · the mockup-style
+Settings *panel* (a functional Settings view is still wanted, per Polish) ·
+track ratings · play-count tracking.
 
 ### Phase 8 — Tag Editor *(deferred / optional — "what we can")*
 - [ ] Single-track tag edit, write-back via `lofty`, refresh DB row.
