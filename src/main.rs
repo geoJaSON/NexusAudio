@@ -6,6 +6,7 @@ mod app;
 mod audiobooks;
 mod library;
 mod player;
+mod playlists;
 mod settings;
 mod store;
 mod ui;

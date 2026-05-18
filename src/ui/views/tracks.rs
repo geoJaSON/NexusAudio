@@ -11,7 +11,12 @@ const ROW_H: f32 = 36.0;
 /// Cap on the queue built from a double-click in this view (Phase 3).
 const PLAY_CAP: i64 = 10_000;
 
-pub fn show(ui: &mut egui::Ui, db: &Db, state: &mut LibraryUi) -> Option<ViewAction> {
+pub fn show(
+    ui: &mut egui::Ui,
+    db: &Db,
+    state: &mut LibraryUi,
+    playlists: super::Playlists,
+) -> Option<ViewAction> {
     let mut action = None;
     // ---- toolbar: search + sort ----
     ui.horizontal(|ui| {
@@ -85,7 +90,7 @@ pub fn show(ui: &mut egui::Ui, db: &Db, state: &mut LibraryUi) -> Option<ViewAct
                 let (resp, add_q) = track_row(ui, num, t);
                 if add_q {
                     hit = Some((super::RowAction::AddToQueue, range.start + i, t.clone()));
-                } else if let Some(a) = super::row_actions(&resp) {
+                } else if let Some(a) = super::row_actions(&resp, playlists) {
                     hit = Some((a, range.start + i, t.clone()));
                 }
             }
@@ -104,6 +109,9 @@ pub fn show(ui: &mut egui::Ui, db: &Db, state: &mut LibraryUi) -> Option<ViewAct
             }
             super::RowAction::PlayNext => ViewAction::Enqueue { track, next: true },
             super::RowAction::AddToQueue => ViewAction::Enqueue { track, next: false },
+            super::RowAction::AddToPlaylist(playlist) => {
+                ViewAction::PlaylistAddTrack { playlist, track }
+            }
         });
     }
     action

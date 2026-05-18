@@ -6,9 +6,14 @@ use super::{LibraryUi, ViewAction};
 use crate::library::db::Db;
 use crate::ui::theme::{CRT_DIM, CRT_GREEN, CRT_MID};
 
-pub fn show(ui: &mut egui::Ui, db: &Db, state: &mut LibraryUi) -> Option<ViewAction> {
+pub fn show(
+    ui: &mut egui::Ui,
+    db: &Db,
+    state: &mut LibraryUi,
+    playlists: super::Playlists,
+) -> Option<ViewAction> {
     if let Some(album) = state.album_filter.clone() {
-        return drill(ui, db, state, &album);
+        return drill(ui, db, state, &album, playlists);
     }
 
     let albums = db.albums().unwrap_or_default();
@@ -93,6 +98,7 @@ fn drill(
     db: &Db,
     state: &mut LibraryUi,
     album: &str,
+    playlists: super::Playlists,
 ) -> Option<ViewAction> {
     let mut bulk: Option<bool> = None; // Some(shuffle) = play whole album
     ui.horizontal(|ui| {
@@ -118,6 +124,6 @@ fn drill(
     if let Some(shuffle) = bulk {
         return Some(ViewAction::Play { list, index: 0, shuffle });
     }
-    let pick = super::artists::track_list(ui, &list);
+    let pick = super::artists::track_list(ui, &list, playlists);
     super::list_action(list, pick)
 }

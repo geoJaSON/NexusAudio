@@ -9,7 +9,12 @@ use crate::library::db::Db;
 use crate::library::models::Track;
 use crate::ui::theme::{CRT_DIM, CRT_GREEN, CRT_MID};
 
-pub fn show(ui: &mut egui::Ui, db: &Db, state: &mut LibraryUi) -> Option<ViewAction> {
+pub fn show(
+    ui: &mut egui::Ui,
+    db: &Db,
+    state: &mut LibraryUi,
+    playlists: super::Playlists,
+) -> Option<ViewAction> {
     if let Some(artist) = state.artist_filter.clone() {
         let mut bulk: Option<bool> = None;
         ui.horizontal(|ui| {
@@ -35,7 +40,7 @@ pub fn show(ui: &mut egui::Ui, db: &Db, state: &mut LibraryUi) -> Option<ViewAct
         if let Some(shuffle) = bulk {
             return Some(ViewAction::Play { list, index: 0, shuffle });
         }
-        let pick = track_list(ui, &list);
+        let pick = track_list(ui, &list, playlists);
         return super::list_action(list, pick);
     }
 
@@ -112,6 +117,7 @@ pub fn show(ui: &mut egui::Ui, db: &Db, state: &mut LibraryUi) -> Option<ViewAct
 pub fn track_list(
     ui: &mut egui::Ui,
     tracks: &[Track],
+    playlists: super::Playlists,
 ) -> Option<(usize, super::RowAction)> {
     let mut clicked = None;
     egui::ScrollArea::vertical()
@@ -168,7 +174,7 @@ pub fn track_list(
                 );
                 if add_q {
                     clicked = Some((i, super::RowAction::AddToQueue));
-                } else if let Some(a) = super::row_actions(&row) {
+                } else if let Some(a) = super::row_actions(&row, playlists) {
                     clicked = Some((i, a));
                 }
                 ui.separator();

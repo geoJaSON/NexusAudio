@@ -7,6 +7,7 @@
 pub mod albums;
 pub mod artists;
 pub mod folders;
+pub mod playlists;
 pub mod queue;
 pub mod tracks;
 
@@ -17,10 +18,14 @@ use eframe::egui;
 use crate::library::db::SortKey;
 use crate::library::models::Track;
 
+/// `(playlist id, name)` pairs for the "Add to Playlist" submenu.
+pub type Playlists<'a> = &'a [(uuid::Uuid, String)];
+
 /// A full-width, full-height clickable list row. Forcing the region to the
 /// available width makes the *entire* row the hit target (egui otherwise sizes
 /// the response to just the laid-out content, leaving dead space around it).
 /// Returns the click-sensing response; paints the hover highlight itself.
+#[allow(dead_code)] // no-trailing-actions convenience wrapper over list_row_actions
 pub fn list_row(
     ui: &mut egui::Ui,
     height: f32,
@@ -57,11 +62,8 @@ pub fn list_row_actions(
 
     if ui.is_rect_visible(rect) {
         if ui.rect_contains_pointer(hit_rect) {
-            ui.painter().rect_filled(
-                rect,
-                0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 255, 65, 18),
-            );
+            ui.painter()
+                .rect_filled(rect, 0.0, crate::ui::theme::ROW_HOVER);
         }
         let mut content = ui.new_child(
             egui::UiBuilder::new()
@@ -109,18 +111,36 @@ pub enum ViewAction {
     QueueRemove(usize),
     QueueMove { i: usize, up: bool },
     QueueClear,
+    /// Playlist operations.
+    PlaylistSelect(uuid::Uuid),
+    PlaylistNew,
+    PlaylistDelete(uuid::Uuid),
+    PlaylistDuplicate(uuid::Uuid),
+    PlaylistRename(uuid::Uuid, String),
+    PlaylistRemoveAt(uuid::Uuid, usize),
+    PlaylistMoveAt { id: uuid::Uuid, i: usize, up: bool },
+    PlaylistExport(uuid::Uuid),
+    PlaylistImport,
+    /// Add a track to an existing playlist, or `None` = new playlist.
+    PlaylistAddTrack { playlist: Option<uuid::Uuid>, track: Track },
 }
 
 /// Per-row interaction: double-click or a context-menu pick.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum RowAction {
     Play,
     PlayNext,
     AddToQueue,
+    /// Add to an existing playlist (`Some`) or a brand-new one (`None`).
+    AddToPlaylist(Option<uuid::Uuid>),
 }
 
 /// Standard track-row affordance: double-click = play, right-click = menu.
-pub fn row_actions(resp: &egui::Response) -> Option<RowAction> {
+/// `playlists` populates the "Add to Playlist" submenu.
+pub fn row_actions(
+    resp: &egui::Response,
+    playlists: &[(uuid::Uuid, String)],
+) -> Option<RowAction> {
     let mut act = None;
     if resp.double_clicked() {
         act = Some(RowAction::Play);
@@ -134,10 +154,25 @@ pub fn row_actions(resp: &egui::Response) -> Option<RowAction> {
             act = Some(RowAction::PlayNext);
             ui.close_menu();
         }
-        if ui.button("+  ADD TO QUEUE").clicked() {
+        if ui.button("+   ADD TO QUEUE").clicked() {
             act = Some(RowAction::AddToQueue);
             ui.close_menu();
         }
+        ui.menu_button("+   ADD TO PLAYLIST", |ui| {
+            if ui.button("[ NEW PLAYLIST ]").clicked() {
+                act = Some(RowAction::AddToPlaylist(None));
+                ui.close_menu();
+            }
+            if !playlists.is_empty() {
+                ui.separator();
+            }
+            for (id, name) in playlists {
+                if ui.button(name).clicked() {
+                    act = Some(RowAction::AddToPlaylist(Some(*id)));
+                    ui.close_menu();
+                }
+            }
+        });
     });
     act
 }
@@ -156,6 +191,10 @@ pub fn list_action(list: Vec<Track>, pick: Option<(usize, RowAction)>) -> Option
             track: list.get(index)?.clone(),
             next: false,
         },
+        RowAction::AddToPlaylist(playlist) => ViewAction::PlaylistAddTrack {
+            playlist,
+            track: list.get(index)?.clone(),
+        },
     })
 }
 
@@ -167,6 +206,9 @@ pub struct LibraryUi {
     pub sort: SortKey,
     pub artist_filter: Option<String>,
     pub album_filter: Option<String>,
+    pub selected_playlist: Option<uuid::Uuid>,
+    /// Inline rename buffer for the selected playlist (None = not renaming).
+    pub rename_buf: Option<String>,
 
     cache_key: Option<CacheKey>,
     cache: Vec<Track>,
@@ -189,6 +231,8 @@ impl Default for LibraryUi {
             sort: SortKey::Title,
             artist_filter: None,
             album_filter: None,
+            selected_playlist: None,
+            rename_buf: None,
             cache_key: None,
             cache: Vec::new(),
             cache_offset: 0,

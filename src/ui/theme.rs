@@ -9,8 +9,15 @@ pub const CRT_DIM: Color32 = Color32::from_rgb(0, 179, 44);
 pub const CRT_DARK: Color32 = Color32::from_rgb(0, 61, 15);
 pub const CRT_MID: Color32 = Color32::from_rgb(0, 92, 20);
 pub const AMBER: Color32 = Color32::from_rgb(255, 183, 0);
+#[allow(dead_code)] // full palette; AMBER_DIM/RED_ALERT for Phase 7 themes/errors
 pub const AMBER_DIM: Color32 = Color32::from_rgb(179, 127, 0);
+#[allow(dead_code)]
 pub const RED_ALERT: Color32 = Color32::from_rgb(255, 49, 49);
+
+/// Hover/selection backdrop — a dark, mostly-opaque green so bright phosphor
+/// text reads clearly on top. Used by list rows and (via Visuals) buttons +
+/// context-menu items.
+pub const ROW_HOVER: Color32 = Color32::from_rgb(0, 46, 14);
 
 /// Font family aliases. `Body` = Share Tech Mono, `Logo` = VT323.
 pub const FONT_BODY: &str = "share_tech_mono";
@@ -93,8 +100,14 @@ pub fn apply_visuals(ctx: &egui::Context) {
         ws.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 255, 65, 51));
         ws.fg_stroke = Stroke::new(1.0, CRT_DIM);
     }
+    // Hovered/active widgets (buttons, context-menu items) get the same dark
+    // green backdrop as list rows so hover is visible everywhere.
+    v.widgets.hovered.bg_fill = ROW_HOVER;
+    v.widgets.hovered.weak_bg_fill = ROW_HOVER;
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, CRT_GREEN);
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, CRT_GREEN);
+    v.widgets.active.bg_fill = ROW_HOVER;
+    v.widgets.active.weak_bg_fill = ROW_HOVER;
     v.widgets.active.fg_stroke = Stroke::new(1.0, CRT_GREEN);
 
     ctx.set_visuals(v);

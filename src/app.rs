@@ -9,11 +9,15 @@ use crate::library::db::Db;
 use crate::library::scanner::{self, ScanMsg};
 use crate::player::engine::Engine;
 use crate::player::queue::{Queue, QueueSnapshot};
+use crate::playlists::PlaylistStore;
 use crate::settings::Settings;
 use crate::store::json_store;
 use crate::ui::player_bar::{self, PlayerCmd};
 use crate::ui::theme::{self, AMBER, CRT_DIM, CRT_GREEN, CRT_MID, CRT_PANEL};
-use crate::ui::views::{albums, artists, folders, queue as queue_view, tracks, LibraryUi, ViewAction};
+use crate::ui::views::{
+    albums, artists, folders, playlists as playlists_view, queue as queue_view, tracks,
+    LibraryUi, ViewAction,
+};
 use crate::ui::{sidebar, titlebar, View};
 
 pub struct App {
@@ -28,6 +32,7 @@ pub struct App {
     scan_status: Option<String>,
     engine: Engine,
     queue: Queue,
+    playlists: PlaylistStore,
 }
 
 impl App {
@@ -54,6 +59,10 @@ impl App {
             .map(|d| Settings::load(d))
             .unwrap_or_default();
         let track_count = db.track_count().unwrap_or(0);
+        let playlists = data_dir
+            .as_ref()
+            .map(|d| PlaylistStore::load(d))
+            .unwrap_or_default();
 
         let mut app = Self {
             db,
@@ -67,6 +76,7 @@ impl App {
             scan_status: None,
             engine: Engine::new(),
             queue: Queue::default(),
+            playlists,
         };
         // Restore the saved queue (list + cursor + modes), idle until played.
         if let Some(dir) = &app.data_dir {
@@ -85,6 +95,20 @@ impl App {
                 eprintln!("queue save failed: {e}");
             }
         }
+    }
+
+    fn save_playlists(&self) {
+        if let Some(dir) = &self.data_dir {
+            self.playlists.save(dir);
+        }
+    }
+
+    fn playlist_names(&self) -> Vec<(uuid::Uuid, String)> {
+        self.playlists
+            .lists
+            .iter()
+            .map(|p| (p.id, p.name.clone()))
+            .collect()
     }
 
     fn start_scan(&mut self) {
@@ -213,6 +237,82 @@ impl App {
                 self.queue.clear_upcoming();
                 self.save_queue();
             }
+            ViewAction::PlaylistSelect(id) => {
+                self.lib.selected_playlist = Some(id);
+                self.lib.rename_buf = None;
+                self.view = View::Playlists;
+            }
+            ViewAction::PlaylistNew => {
+                let id = self.playlists.create("NEW PLAYLIST");
+                self.lib.selected_playlist = Some(id);
+                self.lib.rename_buf = Some(self.playlists.get(id).unwrap().name.clone());
+                self.view = View::Playlists;
+                self.save_playlists();
+            }
+            ViewAction::PlaylistDelete(id) => {
+                self.playlists.delete(id);
+                if self.lib.selected_playlist == Some(id) {
+                    self.lib.selected_playlist = None;
+                }
+                self.save_playlists();
+            }
+            ViewAction::PlaylistDuplicate(id) => {
+                if let Some(new_id) = self.playlists.duplicate(id) {
+                    self.lib.selected_playlist = Some(new_id);
+                }
+                self.save_playlists();
+            }
+            ViewAction::PlaylistRename(id, name) => {
+                self.playlists.rename(id, name.trim());
+                self.lib.rename_buf = None;
+                self.save_playlists();
+            }
+            ViewAction::PlaylistRemoveAt(id, idx) => {
+                self.playlists.remove_at(id, idx);
+                self.save_playlists();
+            }
+            ViewAction::PlaylistMoveAt { id, i, up } => {
+                self.playlists.move_at(id, i, up);
+                self.save_playlists();
+            }
+            ViewAction::PlaylistAddTrack { playlist, track } => {
+                let id = playlist.unwrap_or_else(|| {
+                    let id = self.playlists.create("NEW PLAYLIST");
+                    self.lib.selected_playlist = Some(id);
+                    id
+                });
+                self.playlists.add_track(id, track.id);
+                self.save_playlists();
+            }
+            ViewAction::PlaylistExport(id) => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("M3U", &["m3u"])
+                    .set_file_name("playlist.m3u")
+                    .save_file()
+                {
+                    let db = &self.db;
+                    let _ = self.playlists.export_m3u(
+                        id,
+                        |tid| db.track_by_id(tid),
+                        &path,
+                    );
+                }
+            }
+            ViewAction::PlaylistImport => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("M3U", &["m3u", "m3u8"])
+                    .pick_file()
+                {
+                    let db = &self.db;
+                    if let Ok(id) =
+                        self.playlists.import_m3u(&path, |p| db.track_id_by_path(p))
+                    {
+                        self.lib.selected_playlist = Some(id);
+                        self.view = View::Playlists;
+                    }
+                    self.save_playlists();
+                }
+            }
         }
     }
 
@@ -338,18 +438,36 @@ impl eframe::App for App {
                 );
             });
 
+        // Owned snapshot so the sidebar/views don't hold a borrow on
+        // self.playlists while other &mut self fields are in use.
+        let pls = self.playlist_names();
+        let selected_pl = self.lib.selected_playlist;
+
+        let mut sidebar_action = None;
         egui::SidePanel::left("sidebar")
             .exact_width(180.0)
             .resizable(false)
             .frame(panel_frame())
-            .show(ctx, |ui| sidebar::show(ui, &mut self.view));
+            .show(ctx, |ui| {
+                sidebar_action = sidebar::show(ui, &mut self.view, &pls, selected_pl);
+            });
 
         let mut view_action = None;
         egui::CentralPanel::default().show(ctx, |ui| match self.view {
-            View::Tracks => view_action = tracks::show(ui, &self.db, &mut self.lib),
-            View::Albums => view_action = albums::show(ui, &self.db, &mut self.lib),
-            View::Artists => view_action = artists::show(ui, &self.db, &mut self.lib),
+            View::Tracks => {
+                view_action = tracks::show(ui, &self.db, &mut self.lib, &pls)
+            }
+            View::Albums => {
+                view_action = albums::show(ui, &self.db, &mut self.lib, &pls)
+            }
+            View::Artists => {
+                view_action = artists::show(ui, &self.db, &mut self.lib, &pls)
+            }
             View::Queue => view_action = queue_view::show(ui, &self.queue),
+            View::Playlists => {
+                view_action =
+                    playlists_view::show(ui, &self.db, &self.playlists, &mut self.lib)
+            }
             View::Folders => {
                 view_action =
                     folders::show(ui, &self.settings, self.scan_status.as_deref());
@@ -361,6 +479,9 @@ impl eframe::App for App {
         if let Some(c) = player_cmd {
             self.handle_player(c);
         }
+        if let Some(a) = sidebar_action {
+            self.handle_view(a);
+        }
         if let Some(a) = view_action {
             self.handle_view(a);
         }
@@ -369,6 +490,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
         self.save_settings();
         self.save_queue();
+        self.save_playlists();
     }
 }
 

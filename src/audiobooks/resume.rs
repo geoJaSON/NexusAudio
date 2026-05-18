@@ -4,6 +4,9 @@
 //! map. The 15-second autosave cadence and the resume dialog wire in at
 //! Phase 6 when the audiobook library/UI exists; the storage contract is
 //! fixed now so the engine has a safe place to record positions.
+//!
+//! Whole module is Phase 6 groundwork — unused until then, by design.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::Path;

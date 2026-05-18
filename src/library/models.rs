@@ -1,6 +1,12 @@
 //! Core library data models. The audio *file* is canonical for tag fields;
 //! the SQLite row is a cache keyed by (path, mtime, file_size_bytes), which is
 //! what makes incremental scanning and a future tag editor possible.
+//!
+//! Data definitions are intentionally declared ahead of the phases that wire
+//! them (Audiobook/Chapter/ResumeState → Phase 6; the model-side
+//! PlaybackQueue/QueueEntry/QueueSource predate `player::queue` and feed the
+//! Phase 4 source-tag display), so module-level dead_code is expected here.
+#![allow(dead_code)]
 
 use std::collections::VecDeque;
 use std::path::PathBuf;

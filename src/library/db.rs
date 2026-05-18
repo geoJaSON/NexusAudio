@@ -323,6 +323,34 @@ impl Db {
             .collect();
         Ok(rows)
     }
+
+    pub fn track_by_id(&self, id: Uuid) -> Option<Track> {
+        let sql = format!("SELECT {TRACK_COLS} FROM tracks WHERE id = ?1");
+        self.conn
+            .query_row(&sql, params![id.to_string()], row_to_track)
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn track_id_by_path(&self, path: &Path) -> Option<Uuid> {
+        self.conn
+            .query_row(
+                "SELECT id FROM tracks WHERE path = ?1",
+                params![path.to_string_lossy()],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|s| Uuid::parse_str(&s).ok())
+    }
+
+    /// Resolve an ordered id list to tracks, preserving order and dropping
+    /// ids that no longer exist in the library.
+    pub fn tracks_by_ids(&self, ids: &[Uuid]) -> Vec<Track> {
+        ids.iter().filter_map(|id| self.track_by_id(*id)).collect()
+    }
 }
 
 /// Turn raw user input into a safe FTS5 prefix query: each token quoted and

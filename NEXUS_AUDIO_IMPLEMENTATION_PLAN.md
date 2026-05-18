@@ -446,11 +446,13 @@ cargo build --release     # release build
 - Note: `list_row`'s full-row interact deliberately NOT used for queue rows (it would occlude their inline buttons — same occlusion rule, inverted).
 - Post-Phase-4 round (user-verified ✓): all tofu glyphs → ASCII (on-theme for a terminal); `list_row_actions` adds an excluded trailing strip; inline `+Q` add-to-queue on track rows (All Tracks + drill-downs); Play All / Shuffle All on album & artist rows and drill headers; shuffle plumbed through `ViewAction::Play`.
 
-### Phase 5 — Playlists
-- [ ] `playlists/models.rs` — CRUD.
-- [ ] `ui/views/playlists.rs` — editor.
-- [ ] Add-to-playlist from context menu.
-- [ ] M3U import/export.
+### Phase 5 — Playlists — COMPLETE (2026-05-18, builds clean; pending user GUI test)
+- [x] `playlists/mod.rs` — `PlaylistStore`: create/rename/delete/duplicate, add/remove/move tracks, atomic `playlists.json`.
+- [x] `ui/views/playlists.rs` — track list w/ reorder+remove, Play All / Shuffle, rename (inline) / delete / duplicate, M3U export/import buttons.
+- [x] Add-to-playlist from the row context menu (existing playlists + New Playlist) — wired across All Tracks + Album/Artist drill-downs.
+- [x] M3U import/export — extended M3U; export resolves ids→paths via DB, import path-matches back to library track ids (rfd file dialogs).
+- [x] Sidebar shows real playlists (replaces placeholder) + `+ NEW PLAYLIST`; selection opens the Playlists view.
+- Tracks referenced by `Uuid`; the App resolves ids→`Track` via the library DB at play time.
 
 ### Phase 6 — Audiobooks (full)
 - [ ] `audiobooks/models.rs` — Audiobook, Chapter.

@@ -35,12 +35,14 @@ impl Queue {
         self.rebuild_order(Some(start));
     }
 
+    #[allow(dead_code)] // full-queue clear; UI currently clears "up next" only
     pub fn clear(&mut self) {
         self.items.clear();
         self.order.clear();
         self.pos = None;
     }
 
+    #[allow(dead_code)] // convenience accessor kept alongside len()
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -65,7 +67,6 @@ impl Queue {
             (Some(_), RepeatMode::All) => Some(0),
             (Some(_), RepeatMode::None) => None,
             (None, _) => Some(0),
-            _ => None,
         };
         self.current()
     }

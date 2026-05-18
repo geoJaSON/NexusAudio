@@ -11,6 +11,7 @@ pub enum View {
     Albums,
     Artists,
     Queue,
+    Playlists,
     Folders,
     Audiobooks,
     Settings,

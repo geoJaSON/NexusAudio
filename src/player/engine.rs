@@ -28,6 +28,7 @@ use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // bitrate_kbps/bits exposed for future status/details use
 pub struct AudioInfo {
     pub codec: String,
     pub sample_rate: u32,
@@ -39,6 +40,7 @@ pub struct AudioInfo {
 enum Cmd {
     Load { path: PathBuf, start_secs: f64 },
     Play,
+    #[allow(dead_code)] // explicit pause() API; UI currently uses TogglePause
     Pause,
     TogglePause,
     Stop,
@@ -92,6 +94,7 @@ impl Engine {
     pub fn play(&self) {
         let _ = self.tx.send(Cmd::Play);
     }
+    #[allow(dead_code)] // public engine API; not yet called from the UI
     pub fn pause(&self) {
         let _ = self.tx.send(Cmd::Pause);
     }

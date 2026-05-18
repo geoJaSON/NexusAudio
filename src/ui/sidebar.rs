@@ -3,9 +3,17 @@
 use eframe::egui::{self, RichText};
 
 use super::theme::{CRT_DIM, CRT_GREEN, CRT_MID};
+use super::views::ViewAction;
 use super::View;
 
-pub fn show(ui: &mut egui::Ui, current: &mut View) {
+pub fn show(
+    ui: &mut egui::Ui,
+    current: &mut View,
+    playlists: &[(uuid::Uuid, String)],
+    selected: Option<uuid::Uuid>,
+) -> Option<ViewAction> {
+    let mut action = None;
+
     ui.add_space(8.0);
     section_label(ui, "// LIBRARY");
     nav_item(ui, current, View::Tracks, "ALL TRACKS");
@@ -16,27 +24,49 @@ pub fn show(ui: &mut egui::Ui, current: &mut View) {
 
     ui.add_space(10.0);
     section_label(ui, "// PLAYLISTS");
-    // Placeholder until Phase 5 wires real playlists from the JSON store.
-    for (tag, name) in [
-        ("[01]", "SYNTHWAVE MIX"),
-        ("[02]", "LATE NIGHT CODE"),
-        ("[03]", "MORNING SECTOR"),
-    ] {
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            ui.label(RichText::new(tag).size(10.0).color(CRT_MID));
-            ui.label(RichText::new(name).size(10.0).color(CRT_DIM));
-        });
+    for (i, (id, name)) in playlists.iter().enumerate() {
+        let active = *current == View::Playlists && selected == Some(*id);
+        let resp = ui
+            .horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    RichText::new(format!("[{:02}]", i + 1)).size(10.0).color(CRT_MID),
+                );
+                ui.label(
+                    RichText::new(name)
+                        .size(10.0)
+                        .color(if active { CRT_GREEN } else { CRT_DIM }),
+                )
+            })
+            .inner
+            .interact(egui::Sense::click());
+        if resp.clicked() {
+            action = Some(ViewAction::PlaylistSelect(*id));
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
     }
-    ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        ui.label(RichText::new("[--] + NEW PLAYLIST").size(10.0).color(CRT_MID));
-    });
+    let new = ui
+        .horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(RichText::new("[--] + NEW PLAYLIST").size(10.0).color(CRT_MID))
+        })
+        .inner
+        .interact(egui::Sense::click());
+    if new.clicked() {
+        action = Some(ViewAction::PlaylistNew);
+    }
+    if new.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 
     ui.add_space(10.0);
     section_label(ui, "// MODULES");
     nav_item(ui, current, View::Audiobooks, "AUDIOBOOKS");
     nav_item(ui, current, View::Settings, "SETTINGS");
+
+    action
 }
 
 fn section_label(ui: &mut egui::Ui, text: &str) {
