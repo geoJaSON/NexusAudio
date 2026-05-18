@@ -8,6 +8,7 @@ pub mod albums;
 pub mod artists;
 pub mod audiobooks;
 pub mod folders;
+pub mod genres;
 pub mod playlists;
 pub mod queue;
 pub mod settings;
@@ -136,6 +137,8 @@ pub enum ViewAction {
     ClearQuickResume,
     /// A settings widget changed — persist + re-apply visuals.
     SettingsChanged,
+    EditTags(Track),
+    CreatePlaylistFromQueue,
 }
 
 /// Per-row interaction: double-click or a context-menu pick.
@@ -146,6 +149,7 @@ pub enum RowAction {
     AddToQueue,
     /// Add to an existing playlist (`Some`) or a brand-new one (`None`).
     AddToPlaylist(Option<uuid::Uuid>),
+    EditTags,
 }
 
 /// Standard track-row affordance: double-click = play, right-click = menu.
@@ -169,6 +173,10 @@ pub fn row_actions(
         }
         if ui.button("+   ADD TO QUEUE").clicked() {
             act = Some(RowAction::AddToQueue);
+            ui.close_menu();
+        }
+        if ui.button("~   EDIT TAGS").clicked() {
+            act = Some(RowAction::EditTags);
             ui.close_menu();
         }
         ui.menu_button("+   ADD TO PLAYLIST", |ui| {
@@ -208,6 +216,7 @@ pub fn list_action(list: Vec<Track>, pick: Option<(usize, RowAction)>) -> Option
             playlist,
             track: list.get(index)?.clone(),
         },
+        RowAction::EditTags => ViewAction::EditTags(list.get(index)?.clone()),
     })
 }
 
@@ -219,6 +228,7 @@ pub struct LibraryUi {
     pub sort: SortKey,
     pub artist_filter: Option<String>,
     pub album_filter: Option<String>,
+    pub genre_filter: Option<String>,
     pub selected_playlist: Option<uuid::Uuid>,
     /// Inline rename buffer for the selected playlist (None = not renaming).
     pub rename_buf: Option<String>,
@@ -247,6 +257,7 @@ impl Default for LibraryUi {
             sort: SortKey::Title,
             artist_filter: None,
             album_filter: None,
+            genre_filter: None,
             selected_playlist: None,
             rename_buf: None,
             ab_search: String::new(),

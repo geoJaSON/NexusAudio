@@ -501,11 +501,14 @@ cargo build --release     # release build
 
 **Nice to have (eventually):**
 - [ ] Equalizer + presets in Settings (only if not disproportionately hard).
-- [ ] Tag editing (this is the old Phase 8 — keep §4 "file is canonical" design).
-- [ ] Genres as their own library section.
-- [ ] Queue as a right-side slide-out/pop-out: show session play history, and
-  "create playlist from queue".
-- [ ] Standard user preferences/config in Settings.
+- [x] Tag editing — row context-menu → modal → `lofty` write-back
+  (`scanner::write_tags`, file is canonical) → single-file DB rescan.
+- [x] Genres as their own library section (Genres nav + drill-down).
+- [x] Queue as a right-side slide-out (Q key / QUEUE button, `show_animated`);
+  shows "played this session" (App-level history across queue replacements);
+  "+ PLAYLIST" creates a playlist from the queue.
+- [ ] Standard user preferences/config in Settings (partially done: auto-scan,
+  EQ toggle, resume interval, colors live there now).
 
 **Explicitly de-scoped (do NOT build unless the user reverses this):**
 command palette · scanline overlay · animated EQ bars · the mockup-style

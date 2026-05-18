@@ -187,6 +187,66 @@ fn is_music(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Editable tag fields for the tag editor.
+#[derive(Debug, Clone, Default)]
+pub struct TagEdit {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_artist: String,
+    pub genre: String,
+    pub year: String,
+    pub track: String,
+    pub disc: String,
+}
+
+/// Write `t` back to the file (file is canonical), then refresh that one row
+/// in the DB. Returns Ok on success.
+pub fn write_tags(db: &Db, path: &Path, t: &TagEdit) -> anyhow::Result<()> {
+    use lofty::config::WriteOptions;
+    use lofty::tag::{Tag, TagExt};
+
+    let mut tagged = lofty::read_from_path(path)?;
+    let tag_type = tagged.primary_tag_type();
+    if tagged.primary_tag_mut().is_none() {
+        tagged.insert_tag(Tag::new(tag_type));
+    }
+    let tag = tagged
+        .primary_tag_mut()
+        .ok_or_else(|| anyhow::anyhow!("no writable tag"))?;
+
+    let set = |tag: &mut Tag, key: ItemKey, v: &str| {
+        if v.trim().is_empty() {
+            tag.remove_key(&key);
+        } else {
+            tag.insert_text(key, v.trim().to_string());
+        }
+    };
+    set(tag, ItemKey::TrackTitle, &t.title);
+    set(tag, ItemKey::TrackArtist, &t.artist);
+    set(tag, ItemKey::AlbumTitle, &t.album);
+    set(tag, ItemKey::AlbumArtist, &t.album_artist);
+    set(tag, ItemKey::Genre, &t.genre);
+    set(tag, ItemKey::Year, t.year.trim());
+    set(tag, ItemKey::TrackNumber, t.track.trim());
+    set(tag, ItemKey::DiscNumber, t.disc.trim());
+
+    tag.save_to_path(path, WriteOptions::default())?;
+
+    // Re-read the file and upsert the row so the library reflects the edit.
+    rescan_file(db, path)?;
+    Ok(())
+}
+
+/// Re-tag a single file into the DB (used after a tag edit).
+pub fn rescan_file(db: &Db, path: &Path) -> anyhow::Result<()> {
+    let (mtime, size) =
+        file_stamp(path).ok_or_else(|| anyhow::anyhow!("stat failed"))?;
+    let track = read_track(path, mtime, size)?;
+    db.upsert_track(&track)?;
+    Ok(())
+}
+
 fn file_stamp(p: &Path) -> Option<(i64, u64)> {
     let md = std::fs::metadata(p).ok()?;
     let mtime = md

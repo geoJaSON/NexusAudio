@@ -17,9 +17,9 @@ use crate::playlists::PlaylistStore;
 use crate::settings::Settings;
 use crate::store::json_store;
 use crate::ui::player_bar::{self, NowPlaying, PlayerCmd};
-use crate::ui::theme::{self, AMBER, CRT_DIM, CRT_GREEN, CRT_MID, CRT_PANEL};
+use crate::ui::theme::{self, AMBER, CRT_DIM, CRT_GREEN, CRT_MID, CRT_PANEL, RED_ALERT};
 use crate::ui::views::{
-    albums, artists, audiobooks as audiobooks_view, playlists as playlists_view,
+    albums, artists, audiobooks as audiobooks_view, genres, playlists as playlists_view,
     queue as queue_view, settings as settings_view, tracks, LibraryUi, ViewAction,
 };
 use crate::ui::{sidebar, titlebar, View};
@@ -46,6 +46,13 @@ pub struct App {
     pending_resume: Option<(Audiobook, f64)>,
     sleep_deadline: Option<Instant>,
     last_resume_save: Instant,
+    /// Open tag-editor dialog: (file path, editable fields).
+    pending_tag_edit: Option<(PathBuf, crate::library::scanner::TagEdit)>,
+    tag_edit_error: Option<String>,
+    show_queue: bool,
+    /// Every track started this session (newest last), independent of queue
+    /// replacement — drives the slide-out's "played this session".
+    session_history: Vec<crate::library::models::Track>,
 }
 
 impl App {
@@ -100,6 +107,10 @@ impl App {
             pending_resume: None,
             sleep_deadline: None,
             last_resume_save: Instant::now(),
+            pending_tag_edit: None,
+            tag_edit_error: None,
+            show_queue: false,
+            session_history: Vec::new(),
         };
         // Restore the saved queue (list + cursor + modes), idle until played.
         if let Some(dir) = &app.data_dir {
@@ -292,8 +303,16 @@ impl App {
             self.sleep_deadline = None;
         }
         if let Some(t) = self.queue.current() {
+            let t = t.clone();
             self.engine.load(t.path.clone(), 0.0);
             self.engine.play();
+            // Log to session history (skip consecutive dupes; cap length).
+            if self.session_history.last().map(|p| p.id) != Some(t.id) {
+                self.session_history.push(t);
+                if self.session_history.len() > 300 {
+                    self.session_history.remove(0);
+                }
+            }
         }
     }
 
@@ -519,6 +538,20 @@ impl App {
                     Instant::now() + std::time::Duration::from_secs(m * 60)
                 });
             }
+            ViewAction::CreatePlaylistFromQueue => {
+                let ids: Vec<uuid::Uuid> =
+                    self.queue.ordered().iter().map(|t| t.id).collect();
+                if !ids.is_empty() {
+                    let id = self.playlists.create("QUEUE PLAYLIST");
+                    for tid in ids {
+                        self.playlists.add_track(id, tid);
+                    }
+                    self.lib.selected_playlist = Some(id);
+                    self.lib.rename_buf = None;
+                    self.view = View::Playlists;
+                    self.save_playlists();
+                }
+            }
             ViewAction::ClearQuickResume => {
                 self.resume = ResumeStore::default();
                 if let Some(dir) = &self.data_dir {
@@ -526,10 +559,32 @@ impl App {
                 }
             }
             ViewAction::SettingsChanged => self.save_settings(),
+            ViewAction::EditTags(t) => {
+                let fmt_opt = |o: Option<u32>| o.map(|v| v.to_string()).unwrap_or_default();
+                self.tag_edit_error = None;
+                self.pending_tag_edit = Some((
+                    t.path.clone(),
+                    crate::library::scanner::TagEdit {
+                        title: t.title.clone(),
+                        artist: t.artist.clone(),
+                        album: t.album.clone(),
+                        album_artist: t.album_artist.clone(),
+                        genre: t.genre.clone(),
+                        year: fmt_opt(t.year),
+                        track: fmt_opt(t.track_number),
+                        disc: fmt_opt(t.disc_number),
+                    },
+                ));
+            }
         }
     }
 
     fn handle_player(&mut self, cmd: PlayerCmd) {
+        // UI toggle — independent of music/audiobook context.
+        if let PlayerCmd::ToggleQueue = cmd {
+            self.show_queue = !self.show_queue;
+            return;
+        }
         // While an audiobook is loaded, transport is book-aware: prev/next
         // move by chapter, stop persists resume.
         if self.current_book.is_some() {
@@ -553,7 +608,9 @@ impl App {
                     }
                 }
                 PlayerCmd::Seek(s) => self.engine.seek(s),
-                PlayerCmd::ToggleShuffle | PlayerCmd::CycleRepeat => {}
+                PlayerCmd::ToggleShuffle
+                | PlayerCmd::CycleRepeat
+                | PlayerCmd::ToggleQueue => {}
             }
             return;
         }
@@ -586,6 +643,7 @@ impl App {
             PlayerCmd::Seek(s) => self.engine.seek(s),
             PlayerCmd::ToggleShuffle => self.queue.toggle_shuffle(),
             PlayerCmd::CycleRepeat => self.queue.cycle_repeat(),
+            PlayerCmd::ToggleQueue => {} // handled above
         }
     }
 
@@ -673,6 +731,7 @@ impl App {
                 i.key_pressed(egui::Key::ArrowDown),
                 i.key_pressed(egui::Key::S),
                 i.key_pressed(egui::Key::R),
+                i.key_pressed(egui::Key::Q),
             )
         });
         if k.0 {
@@ -701,6 +760,9 @@ impl App {
         }
         if k.8 {
             self.queue.cycle_repeat();
+        }
+        if k.9 {
+            self.show_queue = !self.show_queue;
         }
     }
 }
@@ -768,6 +830,17 @@ impl eframe::App for App {
                 );
             });
 
+        // Right slide-out queue panel.
+        let mut queue_action = None;
+        egui::SidePanel::right("queue_panel")
+            .exact_width(280.0)
+            .resizable(false)
+            .frame(panel_frame())
+            .show_animated(ctx, self.show_queue, |ui| {
+                queue_action =
+                    queue_view::show(ui, &self.queue, &self.session_history);
+            });
+
         // Audiobook view inputs (owned so no self-borrow spans handle_view).
         let books = if self.view == View::Audiobooks {
             self.db.audiobooks()
@@ -792,7 +865,9 @@ impl eframe::App for App {
             View::Artists => {
                 view_action = artists::show(ui, &self.db, &mut self.lib, &pls)
             }
-            View::Queue => view_action = queue_view::show(ui, &self.queue),
+            View::Genres => {
+                view_action = genres::show(ui, &self.db, &mut self.lib, &pls)
+            }
             View::Playlists => {
                 view_action =
                     playlists_view::show(ui, &self.db, &self.playlists, &mut self.lib)
@@ -864,6 +939,85 @@ impl eframe::App for App {
                 });
         }
 
+        // Tag editor (modal). Take the buffer out so the window can edit it
+        // freely without aliasing `self`; decide on close what to do.
+        if let Some((path, mut edit)) = self.pending_tag_edit.take() {
+            let mut do_save = false;
+            let mut keep = true;
+            let err = self.tag_edit_error.clone();
+            egui::Window::new("EDIT TAGS")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(
+                        RichText::new(path.display().to_string())
+                            .size(9.0)
+                            .color(CRT_MID),
+                    );
+                    ui.add_space(4.0);
+                    let field = |ui: &mut egui::Ui, label: &str, v: &mut String| {
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                [90.0, 18.0],
+                                egui::Label::new(
+                                    RichText::new(label).size(10.0).color(CRT_DIM),
+                                ),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(v).desired_width(280.0),
+                            );
+                        });
+                    };
+                    field(ui, "TITLE", &mut edit.title);
+                    field(ui, "ARTIST", &mut edit.artist);
+                    field(ui, "ALBUM", &mut edit.album);
+                    field(ui, "ALBUM ARTIST", &mut edit.album_artist);
+                    field(ui, "GENRE", &mut edit.genre);
+                    field(ui, "YEAR", &mut edit.year);
+                    field(ui, "TRACK #", &mut edit.track);
+                    field(ui, "DISC #", &mut edit.disc);
+                    if let Some(e) = &err {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(e).size(10.0).color(RED_ALERT));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(RichText::new("[ SAVE ]").color(CRT_GREEN))
+                            .clicked()
+                        {
+                            do_save = true;
+                            keep = false;
+                        }
+                        if ui
+                            .button(RichText::new("CANCEL").color(CRT_MID))
+                            .clicked()
+                        {
+                            keep = false;
+                        }
+                    });
+                });
+
+            if do_save {
+                match crate::library::scanner::write_tags(&self.db, &path, &edit) {
+                    Ok(()) => {
+                        self.tag_edit_error = None;
+                        self.lib.invalidate();
+                        self.track_count = self.db.track_count().unwrap_or(0);
+                    }
+                    Err(e) => {
+                        self.tag_edit_error = Some(format!("write failed: {e}"));
+                        self.pending_tag_edit = Some((path, edit)); // reopen
+                    }
+                }
+            } else if keep {
+                self.pending_tag_edit = Some((path, edit));
+            } else {
+                self.tag_edit_error = None;
+            }
+        }
+
         if let Some(c) = player_cmd {
             self.handle_player(c);
         }
@@ -871,6 +1025,9 @@ impl eframe::App for App {
             self.handle_view(a);
         }
         if let Some(a) = view_action {
+            self.handle_view(a);
+        }
+        if let Some(a) = queue_action {
             self.handle_view(a);
         }
     }

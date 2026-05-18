@@ -11,21 +11,35 @@ use super::ViewAction;
 use crate::player::queue::Queue;
 use crate::ui::theme::{AMBER, CRT_DIM, CRT_GREEN, CRT_MID};
 
-pub fn show(ui: &mut egui::Ui, queue: &Queue) -> Option<ViewAction> {
+pub fn show(
+    ui: &mut egui::Ui,
+    queue: &Queue,
+    session_history: &[crate::library::models::Track],
+) -> Option<ViewAction> {
     let mut action = None;
 
     ui.horizontal(|ui| {
         ui.add_space(8.0);
-        ui.label(RichText::new("// PLAYBACK QUEUE").size(10.0).color(CRT_MID));
+        ui.label(RichText::new("// QUEUE").size(10.0).color(CRT_MID));
+    });
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        if ui
+            .button(RichText::new("+ PLAYLIST").size(9.0).color(CRT_GREEN))
+            .on_hover_text("Create a playlist from the queue")
+            .clicked()
+        {
+            action = Some(ViewAction::CreatePlaylistFromQueue);
+        }
+        if ui
+            .button(RichText::new("CLEAR").size(9.0).color(AMBER))
+            .clicked()
+        {
+            action = Some(ViewAction::QueueClear);
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .button(RichText::new("CLEAR UP NEXT").size(9.0).color(AMBER))
-                .clicked()
-            {
-                action = Some(ViewAction::QueueClear);
-            }
             ui.label(
-                RichText::new(format!("{} IN QUEUE", queue.len()))
+                RichText::new(format!("{} QUEUED", queue.len()))
                     .size(9.0)
                     .color(CRT_MID),
             );
@@ -118,14 +132,13 @@ pub fn show(ui: &mut egui::Ui, queue: &Queue) -> Option<ViewAction> {
                 ui.separator();
             }
 
-            // ---- RECENTLY PLAYED (last 20, newest first) ----
+            // ---- SESSION HISTORY (everything played this run, newest first) ----
             ui.add_space(8.0);
-            let hist = queue.history();
-            section(ui, "RECENTLY PLAYED");
-            if hist.is_empty() {
-                idle(ui, "no history yet");
+            section(ui, "PLAYED THIS SESSION");
+            if session_history.is_empty() {
+                idle(ui, "nothing played yet");
             }
-            for t in hist.iter().rev().take(20) {
+            for t in session_history.iter().rev().take(50) {
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
                     ui.add_sized(

@@ -27,6 +27,7 @@ pub enum PlayerCmd {
     Seek(f64),
     ToggleShuffle,
     CycleRepeat,
+    ToggleQueue,
 }
 
 pub fn show(
@@ -120,6 +121,13 @@ pub fn show(
                     .clicked()
                 {
                     cmd = Some(PlayerCmd::CycleRepeat);
+                }
+                if ui
+                    .button(RichText::new("QUEUE").size(10.0).color(CRT_MID))
+                    .on_hover_text("Toggle queue (Q)")
+                    .clicked()
+                {
+                    cmd = Some(PlayerCmd::ToggleQueue);
                 }
             });
             ui.label(

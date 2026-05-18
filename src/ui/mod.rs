@@ -10,7 +10,7 @@ pub enum View {
     Tracks,
     Albums,
     Artists,
-    Queue,
+    Genres,
     Playlists,
     Audiobooks,
     Settings,

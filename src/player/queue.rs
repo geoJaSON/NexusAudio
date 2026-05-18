@@ -103,7 +103,14 @@ impl Queue {
             .collect()
     }
 
-    /// Already-played tracks, oldest→newest (before the cursor).
+    /// Every queued track in play order (for "create playlist from queue").
+    pub fn ordered(&self) -> Vec<&Track> {
+        self.order.iter().map(|&i| &self.items[i]).collect()
+    }
+
+    /// Already-played tracks, oldest→newest (before the cursor). Superseded
+    /// for the UI by App's session history; kept as queue-model API.
+    #[allow(dead_code)]
     pub fn history(&self) -> Vec<&Track> {
         let end = self.pos.unwrap_or(0);
         self.order[..end.min(self.order.len())]

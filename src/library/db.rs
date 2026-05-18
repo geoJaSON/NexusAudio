@@ -368,11 +368,26 @@ impl Db {
         Ok(rows)
     }
 
+    pub fn genres(&self) -> Result<Vec<(String, u32)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT genre, COUNT(*) FROM tracks WHERE genre <> ''
+             GROUP BY genre COLLATE NOCASE ORDER BY genre COLLATE NOCASE",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u32))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     pub fn tracks_where(&self, column: &str, value: &str) -> Result<Vec<Track>> {
         // `column` is caller-controlled and whitelisted here, never user input.
         let col = match column {
             "album" => "album",
             "artist" => "artist",
+            "genre" => "genre",
             _ => return Ok(Vec::new()),
         };
         let sql = format!(

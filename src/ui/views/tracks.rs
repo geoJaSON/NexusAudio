@@ -112,6 +112,7 @@ pub fn show(
             super::RowAction::AddToPlaylist(playlist) => {
                 ViewAction::PlaylistAddTrack { playlist, track }
             }
+            super::RowAction::EditTags => ViewAction::EditTags(track),
         });
     }
     action

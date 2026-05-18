@@ -20,7 +20,7 @@ pub fn show(
     nav_item(ui, current, View::Tracks, "ALL TRACKS");
     nav_item(ui, current, View::Albums, "ALBUMS");
     nav_item(ui, current, View::Artists, "ARTISTS");
-    nav_item(ui, current, View::Queue, "QUEUE");
+    nav_item(ui, current, View::Genres, "GENRES");
 
     ui.add_space(10.0);
     section_label(ui, "// PLAYLISTS");
