@@ -43,6 +43,14 @@ impl ResumeStore {
         self.map.get(audiobook_id)
     }
 
+    /// The most recently played/updated book — drives "resume last book".
+    pub fn most_recent(&self) -> Option<(Uuid, f64)> {
+        self.map
+            .values()
+            .max_by_key(|r| r.last_updated)
+            .map(|r| (r.audiobook_id, r.position_secs))
+    }
+
     /// Record/refresh a position. Caller persists via `save` on the 15 s
     /// cadence and on pause/stop/close (Phase 6).
     pub fn set(&mut self, audiobook_id: Uuid, position_secs: f64, chapter_index: u32) {

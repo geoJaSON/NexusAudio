@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, RichText};
 
-use super::theme::{CRT_DIM, CRT_GREEN, CRT_MID};
+use super::theme::{AMBER, CRT_DIM, CRT_GREEN, CRT_MID};
 use super::views::ViewAction;
 use super::View;
 
@@ -11,6 +11,7 @@ pub fn show(
     current: &mut View,
     playlists: &[(uuid::Uuid, String)],
     selected: Option<uuid::Uuid>,
+    resume_hint: Option<&str>,
 ) -> Option<ViewAction> {
     let mut action = None;
 
@@ -65,6 +66,31 @@ pub fn show(
     section_label(ui, "// MODULES");
     nav_item(ui, current, View::Audiobooks, "AUDIOBOOKS");
     nav_item(ui, current, View::Settings, "SETTINGS");
+
+    if let Some(hint) = resume_hint {
+        ui.add_space(10.0);
+        section_label(ui, "// RESUME");
+        let resp = ui
+            .horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(RichText::new(">").size(10.0).color(CRT_GREEN));
+                ui.add_sized(
+                    [ui.available_width(), 30.0],
+                    egui::Label::new(
+                        RichText::new(hint).size(10.0).color(AMBER),
+                    )
+                    .truncate(),
+                )
+            })
+            .inner
+            .interact(egui::Sense::click());
+        if resp.clicked() {
+            action = Some(ViewAction::ResumeLastBook);
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
 
     action
 }

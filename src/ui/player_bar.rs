@@ -3,9 +3,20 @@
 
 use eframe::egui::{self, RichText};
 
-use crate::library::models::{RepeatMode, Track};
+use crate::library::models::RepeatMode;
 use crate::player::engine::Engine;
 use crate::ui::theme::{AMBER, CRT_DARK, CRT_DIM, CRT_GREEN, CRT_MID};
+
+/// What the player bar shows as "now playing" — built by the App from either
+/// the music queue or the current audiobook (+ chapter), so the bar doesn't
+/// need to know about `Track` vs `Audiobook`.
+#[derive(Default, Clone)]
+pub struct NowPlaying {
+    pub title: String,
+    pub subtitle: String,
+    /// Trailing detail on the status line (codec/sr, or chapter).
+    pub badge: String,
+}
 
 #[derive(Debug, Clone)]
 pub enum PlayerCmd {
@@ -21,7 +32,7 @@ pub enum PlayerCmd {
 pub fn show(
     ui: &mut egui::Ui,
     engine: &Engine,
-    current: Option<&Track>,
+    now: Option<&NowPlaying>,
     shuffle: bool,
     repeat: &RepeatMode,
 ) -> Option<PlayerCmd> {
@@ -53,24 +64,17 @@ pub fn show(
 
         // now playing
         ui.vertical(|ui| {
-            match current {
-                Some(t) => {
-                    ui.label(RichText::new(&t.title).size(13.0).color(CRT_GREEN));
-                    let mut sub = format!("{} · {}", t.artist, t.album);
-                    if let Some(y) = t.year {
-                        sub.push_str(&format!(" · {y}"));
-                    }
-                    ui.label(RichText::new(sub).size(10.0).color(CRT_DIM));
-                    let info = engine.info();
+            match now {
+                Some(n) => {
+                    ui.label(RichText::new(&n.title).size(13.0).color(CRT_GREEN));
+                    ui.label(RichText::new(&n.subtitle).size(10.0).color(CRT_DIM));
                     let state = if engine.is_playing() { "> PLAYING" } else { "|| PAUSED" };
-                    ui.label(
-                        RichText::new(format!(
-                            "{state} · {} {} Hz",
-                            info.codec, info.sample_rate
-                        ))
-                        .size(9.0)
-                        .color(AMBER),
-                    );
+                    let line = if n.badge.is_empty() {
+                        state.to_string()
+                    } else {
+                        format!("{state} · {}", n.badge)
+                    };
+                    ui.label(RichText::new(line).size(9.0).color(AMBER));
                 }
                 None => {
                     ui.label(RichText::new("— NOTHING PLAYING —").size(13.0).color(CRT_DIM));

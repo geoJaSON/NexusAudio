@@ -454,7 +454,21 @@ cargo build --release     # release build
 - [x] Sidebar shows real playlists (replaces placeholder) + `+ NEW PLAYLIST`; selection opens the Playlists view.
 - Tracks referenced by `Uuid`; the App resolves ids→`Track` via the library DB at play time.
 
-### Phase 6 — Audiobooks (full)
+### Phase 6 — Audiobooks — COMPLETE (2026-05-18, user-verified ✓)
+- [x] Chapter parser `audiobooks::chapters` — hand-rolled MP4: Nero `chpl` + QuickTime chapter **text track**. Validated on the real sample M4B (19 chapters, correct titles/timestamps). `--chapter-spike` harness kept.
+- [x] `mp4_duration_secs` (moov>mvhd) — authoritative codec-independent duration. Found & fixes the **HE-AAC duration-halving bug** (symphonia: 18809 s vs true 37618 s). Seek/position were already real-time-correct.
+- [x] DB audiobook/chapter methods (wholesale rebuild; deterministic v5(path) ids so resume survives rescans).
+- [x] `audiobooks/scanner.rs` — single-file `.m4b` + multi-file (folder = book, files = chapters) detection; lofty meta; `mvhd` duration; title prefers album, falls back to filename when the tag echoes ch.1. Validated via `--ab-smoke` (book/title/author/19 chapters/10:26 correct).
+- [x] Engine `load_book` duration override (HE-AAC fix); audiobook position/seek real-time-correct.
+- [x] `ui/views/audiobooks.rs` — list w/ search+sort+progress bars; Now-Playing panel: chapter list/jump, prev/next chapter, sleep timer.
+- [x] Auto-resume — `[RESUME hh:mm:ss]/[RESTART]/CANCEL` dialog on opening an in-progress book; ResumeStore saved every `resume_save_interval` s while playing + on stop/sleep/exit/end; stable ids.
+- [x] Sleep timer (Off/15/30/45/60 min → pause); book-aware transport (prev/next = chapter; stop persists resume).
+- [x] Folders view now manages audiobook directories too; auto-scan on startup. ASCII glyph fixes.
+- [x] Player bar shows book title + author + live chapter (`NowPlaying` descriptor decouples it from Track vs Audiobook); music unchanged.
+- [x] Sidebar `// RESUME` quick-resume-last-book button (newest ResumeStore entry → one-click resume at saved pos).
+- Builds clean (0 warnings). User-verified: music↔audiobook switching, resume across runs, chapters, player-bar now-playing, quick-resume.
+
+#### Phase 6 detail —
 - [ ] `audiobooks/models.rs` — Audiobook, Chapter.
 - [ ] M4B chapter-atom parsing (budget real MP4 work; lofty may not surface timestamps).
 - [ ] Multi-file book folder detection.

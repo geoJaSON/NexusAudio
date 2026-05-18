@@ -11,7 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use super::models::Track;
+use super::models::{Audiobook, Chapter, Track};
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -350,6 +350,136 @@ impl Db {
     /// ids that no longer exist in the library.
     pub fn tracks_by_ids(&self, ids: &[Uuid]) -> Vec<Track> {
         ids.iter().filter_map(|id| self.track_by_id(*id)).collect()
+    }
+
+    // ---- audiobooks (rebuilt wholesale each scan — few enough to not need
+    //      incremental; ids are deterministic v5(path) so resume survives) ----
+
+    pub fn audiobook_count(&self) -> u64 {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM audiobooks", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(0) as u64
+    }
+
+    pub fn clear_audiobooks(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM chapters", [])?;
+        self.conn.execute("DELETE FROM audiobooks", [])?;
+        Ok(())
+    }
+
+    pub fn upsert_audiobook(&self, b: &Audiobook) -> Result<()> {
+        let id = b.id.to_string();
+        self.conn.execute(
+            "INSERT INTO audiobooks
+               (id,path,title,author,narrator,genre,year,duration_secs,codec,date_added)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+             ON CONFLICT(id) DO UPDATE SET
+               path=excluded.path, title=excluded.title, author=excluded.author,
+               narrator=excluded.narrator, genre=excluded.genre, year=excluded.year,
+               duration_secs=excluded.duration_secs, codec=excluded.codec",
+            params![
+                id,
+                b.path.to_string_lossy(),
+                b.title,
+                b.author,
+                b.narrator,
+                b.genre,
+                b.year,
+                b.duration_secs,
+                b.codec,
+                b.date_added.to_rfc3339(),
+            ],
+        )?;
+        self.conn
+            .execute("DELETE FROM chapters WHERE book_id = ?1", params![id])?;
+        for c in &b.chapters {
+            self.conn.execute(
+                "INSERT INTO chapters (book_id,idx,title,start_secs,end_secs)
+                 VALUES (?1,?2,?3,?4,?5)",
+                params![id, c.index, c.title, c.start_secs, c.end_secs],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn audiobooks(&self) -> Vec<Audiobook> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT id,path,title,author,narrator,genre,year,duration_secs,codec,date_added
+             FROM audiobooks ORDER BY title COLLATE NOCASE",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows: Vec<Audiobook> = stmt
+            .query_map([], |r| {
+                let id = Uuid::parse_str(&r.get::<_, String>(0)?)
+                    .unwrap_or_else(|_| Uuid::nil());
+                Ok(Audiobook {
+                    id,
+                    path: PathBuf::from(r.get::<_, String>(1)?),
+                    title: r.get(2)?,
+                    author: r.get(3)?,
+                    narrator: r.get(4)?,
+                    genre: r.get(5)?,
+                    year: r.get(6)?,
+                    duration_secs: r.get(7)?,
+                    chapters: Vec::new(),
+                    codec: r.get(8)?,
+                    date_added: r
+                        .get::<_, String>(9)
+                        .ok()
+                        .and_then(|s| {
+                            chrono::DateTime::parse_from_rfc3339(&s).ok()
+                        })
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(chrono::Utc::now),
+                })
+            })
+            .map(|it| it.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        rows.into_iter()
+            .map(|mut b| {
+                b.chapters = self.chapters_of(b.id);
+                b
+            })
+            .collect()
+    }
+
+    /// Cheap single-row title lookup (no chapter join) — for the sidebar
+    /// "resume last book" label rendered every frame.
+    pub fn audiobook_title(&self, id: Uuid) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT title FROM audiobooks WHERE id = ?1",
+                params![id.to_string()],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    fn chapters_of(&self, book_id: Uuid) -> Vec<Chapter> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT idx,title,start_secs,end_secs FROM chapters
+             WHERE book_id = ?1 ORDER BY idx",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![book_id.to_string()], |r| {
+            Ok(Chapter {
+                index: r.get(0)?,
+                title: r.get(1)?,
+                start_secs: r.get(2)?,
+                end_secs: r.get(3)?,
+            })
+        })
+        .map(|it| it.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
     }
 }
 

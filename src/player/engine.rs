@@ -38,7 +38,12 @@ pub struct AudioInfo {
 
 #[derive(Debug)]
 enum Cmd {
-    Load { path: PathBuf, start_secs: f64 },
+    Load {
+        path: PathBuf,
+        start_secs: f64,
+        /// Authoritative duration override (audiobooks: mvhd vs HE-AAC half).
+        duration: Option<f64>,
+    },
     Play,
     #[allow(dead_code)] // explicit pause() API; UI currently uses TogglePause
     Pause,
@@ -57,6 +62,8 @@ struct Shared {
     ended: AtomicBool,
     position_ms: AtomicU64,
     duration_ms: AtomicU64,
+    /// >0 overrides the decoded duration (audiobook authoritative duration).
+    duration_override_ms: AtomicU64,
     volume: AtomicU32, // f32 bits, 0.0..=1.0
     info: Mutex<AudioInfo>,
 }
@@ -74,6 +81,7 @@ impl Engine {
             ended: AtomicBool::new(false),
             position_ms: AtomicU64::new(0),
             duration_ms: AtomicU64::new(0),
+            duration_override_ms: AtomicU64::new(0),
             volume: AtomicU32::new(0.7f32.to_bits()),
             info: Mutex::new(AudioInfo::default()),
         });
@@ -89,7 +97,16 @@ impl Engine {
     }
 
     pub fn load(&self, path: PathBuf, start_secs: f64) {
-        let _ = self.tx.send(Cmd::Load { path, start_secs });
+        let _ = self.tx.send(Cmd::Load { path, start_secs, duration: None });
+    }
+    /// Load an audiobook with an authoritative duration (codec-independent),
+    /// resuming at `start_secs`.
+    pub fn load_book(&self, path: PathBuf, start_secs: f64, duration: f64) {
+        let _ = self.tx.send(Cmd::Load {
+            path,
+            start_secs,
+            duration: Some(duration),
+        });
     }
     pub fn play(&self) {
         let _ = self.tx.send(Cmd::Play);
@@ -121,7 +138,13 @@ impl Engine {
         self.shared.position_ms.load(Ordering::Relaxed) as f64 / 1000.0
     }
     pub fn duration_secs(&self) -> f64 {
-        self.shared.duration_ms.load(Ordering::Relaxed) as f64 / 1000.0
+        let ov = self.shared.duration_override_ms.load(Ordering::Relaxed);
+        let ms = if ov > 0 {
+            ov
+        } else {
+            self.shared.duration_ms.load(Ordering::Relaxed)
+        };
+        ms as f64 / 1000.0
     }
     pub fn volume(&self) -> f32 {
         f32::from_bits(self.shared.volume.load(Ordering::Relaxed))
@@ -283,7 +306,7 @@ fn handle_cmd(
     dev_ch: usize,
 ) {
     match cmd {
-        Cmd::Load { path, start_secs } => {
+        Cmd::Load { path, start_secs, duration } => {
             shared.playing.store(false, Ordering::Relaxed);
             ring.lock().unwrap().clear();
             played.store(0, Ordering::Relaxed);
@@ -302,6 +325,10 @@ fn handle_cmd(
                         })
                         .unwrap_or(0.0);
                     shared.duration_ms.store((dur * 1000.0) as u64, Ordering::Relaxed);
+                    shared.duration_override_ms.store(
+                        duration.map(|d| (d * 1000.0) as u64).unwrap_or(0),
+                        Ordering::Relaxed,
+                    );
                     if start_secs > 0.0 {
                         seek_track(&mut t, start_secs);
                     }

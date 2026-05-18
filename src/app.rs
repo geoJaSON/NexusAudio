@@ -2,21 +2,25 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 use eframe::egui::{self, RichText};
 
+use crate::audiobooks::resume::ResumeStore;
+use crate::audiobooks::scanner::{self as ab_scanner, AbScanMsg};
 use crate::library::db::Db;
+use crate::library::models::Audiobook;
 use crate::library::scanner::{self, ScanMsg};
 use crate::player::engine::Engine;
 use crate::player::queue::{Queue, QueueSnapshot};
 use crate::playlists::PlaylistStore;
 use crate::settings::Settings;
 use crate::store::json_store;
-use crate::ui::player_bar::{self, PlayerCmd};
+use crate::ui::player_bar::{self, NowPlaying, PlayerCmd};
 use crate::ui::theme::{self, AMBER, CRT_DIM, CRT_GREEN, CRT_MID, CRT_PANEL};
 use crate::ui::views::{
-    albums, artists, folders, playlists as playlists_view, queue as queue_view, tracks,
-    LibraryUi, ViewAction,
+    albums, artists, audiobooks as audiobooks_view, folders, playlists as playlists_view,
+    queue as queue_view, tracks, LibraryUi, ViewAction,
 };
 use crate::ui::{sidebar, titlebar, View};
 
@@ -33,6 +37,15 @@ pub struct App {
     engine: Engine,
     queue: Queue,
     playlists: PlaylistStore,
+    resume: ResumeStore,
+    ab_scan_rx: Option<Receiver<AbScanMsg>>,
+    ab_scan_status: Option<String>,
+    /// The audiobook currently loaded in the engine (if any).
+    current_book: Option<Audiobook>,
+    /// Pending resume dialog: (book, saved_position_secs).
+    pending_resume: Option<(Audiobook, f64)>,
+    sleep_deadline: Option<Instant>,
+    last_resume_save: Instant,
 }
 
 impl App {
@@ -63,6 +76,10 @@ impl App {
             .as_ref()
             .map(|d| PlaylistStore::load(d))
             .unwrap_or_default();
+        let resume = data_dir
+            .as_ref()
+            .map(|d| ResumeStore::load(d))
+            .unwrap_or_default();
 
         let mut app = Self {
             db,
@@ -77,16 +94,101 @@ impl App {
             engine: Engine::new(),
             queue: Queue::default(),
             playlists,
+            resume,
+            ab_scan_rx: None,
+            ab_scan_status: None,
+            current_book: None,
+            pending_resume: None,
+            sleep_deadline: None,
+            last_resume_save: Instant::now(),
         };
         // Restore the saved queue (list + cursor + modes), idle until played.
         if let Some(dir) = &app.data_dir {
             let snap: QueueSnapshot = json_store::load_or_default(&dir.join("queue.json"));
             app.queue = Queue::restore(snap);
         }
-        if app.settings.auto_scan_on_startup && !app.settings.music_folders.is_empty() {
-            app.start_scan();
+        if app.settings.auto_scan_on_startup {
+            if !app.settings.music_folders.is_empty() {
+                app.start_scan();
+            }
+            if !app.settings.audiobook_folders.is_empty() {
+                app.start_ab_scan();
+            }
         }
         app
+    }
+
+    fn start_ab_scan(&mut self) {
+        let Some(db_path) = self.db_path.clone() else {
+            self.ab_scan_status = Some("SCAN UNAVAILABLE (no data dir)".into());
+            return;
+        };
+        if self.ab_scan_rx.is_some() {
+            return;
+        }
+        self.ab_scan_status = Some("SCANNING…".into());
+        self.ab_scan_rx = Some(ab_scanner::spawn_scan(
+            db_path,
+            self.settings.audiobook_folders.clone(),
+        ));
+    }
+
+    fn poll_ab_scan(&mut self) {
+        let msgs: Vec<AbScanMsg> = match &self.ab_scan_rx {
+            Some(rx) => rx.try_iter().collect(),
+            None => return,
+        };
+        let mut done = false;
+        for m in msgs {
+            match m {
+                AbScanMsg::Started { total } => {
+                    self.ab_scan_status = Some(format!("SCANNING 0 / {total}"));
+                }
+                AbScanMsg::Progress { done, total, current } => {
+                    self.ab_scan_status =
+                        Some(format!("SCANNING {done} / {total}  ·  {current}"));
+                }
+                AbScanMsg::Done { count, errors } => {
+                    self.ab_scan_status =
+                        Some(format!("SCAN DONE · {count} books · !{errors}"));
+                    done = true;
+                }
+                AbScanMsg::Failed(e) => {
+                    self.ab_scan_status = Some(format!("SCAN FAILED: {e}"));
+                    done = true;
+                }
+            }
+        }
+        if done {
+            self.ab_scan_rx = None;
+        }
+    }
+
+    /// Begin (or resume) playing an audiobook with its authoritative duration.
+    fn play_book(&mut self, book: Audiobook, start_secs: f64) {
+        self.engine
+            .load_book(book.path.clone(), start_secs, book.duration_secs);
+        self.engine.play();
+        self.current_book = Some(book);
+        self.last_resume_save = Instant::now();
+    }
+
+    fn save_resume(&mut self) {
+        let (Some(book), Some(dir)) = (&self.current_book, &self.data_dir) else {
+            return;
+        };
+        let pos = self.engine.position_secs();
+        if pos <= 0.0 {
+            return;
+        }
+        let ch = book
+            .chapters
+            .iter()
+            .rposition(|c| pos + 0.5 >= c.start_secs)
+            .unwrap_or(0) as u32;
+        self.resume.set(book.id, pos, ch);
+        self.resume.save(dir);
+        self.last_resume_save = Instant::now();
     }
 
     fn save_queue(&self) {
@@ -180,11 +282,54 @@ impl App {
     }
 
     /// Load + play whatever the queue cursor currently points at.
-    fn play_current(&self) {
+    fn play_current(&mut self) {
+        // Starting music ends any audiobook context (clears the now-playing
+        // book + its sleep timer; the engine load also drops the duration
+        // override so music duration is correct again).
+        if self.current_book.is_some() {
+            self.save_resume();
+            self.current_book = None;
+            self.sleep_deadline = None;
+        }
         if let Some(t) = self.queue.current() {
             self.engine.load(t.path.clone(), 0.0);
             self.engine.play();
         }
+    }
+
+    /// Build the player-bar "now playing" from the current book (with chapter)
+    /// or the music queue.
+    fn now_playing(&self) -> Option<NowPlaying> {
+        if self.current_book.is_some() && self.engine.has_track() {
+            let book = self.current_book.as_ref().unwrap();
+            let mut subtitle = book.author.clone();
+            if !book.chapters.is_empty() {
+                let i = self.current_chapter_idx();
+                subtitle.push_str(&format!(
+                    "   ·   CH {}/{}: {}",
+                    i + 1,
+                    book.chapters.len(),
+                    book.chapters[i].title
+                ));
+            }
+            let info = self.engine.info();
+            return Some(NowPlaying {
+                title: book.title.clone(),
+                subtitle,
+                badge: format!("AUDIOBOOK · {}", info.codec),
+            });
+        }
+        let t = self.queue.current()?;
+        let mut subtitle = format!("{} · {}", t.artist, t.album);
+        if let Some(y) = t.year {
+            subtitle.push_str(&format!(" · {y}"));
+        }
+        let info = self.engine.info();
+        Some(NowPlaying {
+            title: t.title.clone(),
+            subtitle,
+            badge: format!("{} {} Hz", info.codec, info.sample_rate),
+        })
     }
 
     fn handle_view(&mut self, action: ViewAction) {
@@ -313,10 +458,79 @@ impl App {
                     self.save_playlists();
                 }
             }
+            ViewAction::AddAudiobookFolder => {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    if !self.settings.audiobook_folders.contains(&dir) {
+                        self.settings.audiobook_folders.push(dir);
+                        self.save_settings();
+                        self.start_ab_scan();
+                    }
+                }
+            }
+            ViewAction::RemoveAudiobookFolder(p) => {
+                self.settings.audiobook_folders.retain(|f| f != &p);
+                self.save_settings();
+            }
+            ViewAction::ScanAudiobooks => self.start_ab_scan(),
+            ViewAction::OpenAudiobook(id) => {
+                if let Some(book) = self.db.audiobooks().into_iter().find(|b| b.id == id) {
+                    let saved = self.resume.get(&id).map(|r| r.position_secs).unwrap_or(0.0);
+                    // Offer resume only if meaningfully into the book.
+                    if saved > 5.0 && saved < book.duration_secs - 2.0 {
+                        self.pending_resume = Some((book, saved));
+                    } else {
+                        self.play_book(book, 0.0);
+                    }
+                }
+            }
+            ViewAction::ChapterSeek(secs) => self.engine.seek(secs),
+            ViewAction::ResumeLastBook => {
+                if let Some((id, pos)) = self.resume.most_recent() {
+                    if let Some(book) =
+                        self.db.audiobooks().into_iter().find(|b| b.id == id)
+                    {
+                        self.view = View::Audiobooks;
+                        self.play_book(book, pos);
+                    }
+                }
+            }
+            ViewAction::SetSleepTimer(min) => {
+                self.sleep_deadline = min.map(|m| {
+                    Instant::now() + std::time::Duration::from_secs(m * 60)
+                });
+            }
         }
     }
 
     fn handle_player(&mut self, cmd: PlayerCmd) {
+        // While an audiobook is loaded, transport is book-aware: prev/next
+        // move by chapter, stop persists resume.
+        if self.current_book.is_some() {
+            match cmd {
+                PlayerCmd::PlayPause => self.engine.toggle_pause(),
+                PlayerCmd::Stop => {
+                    self.save_resume();
+                    self.engine.stop();
+                    self.current_book = None;
+                }
+                PlayerCmd::Next => self.chapter_step(true),
+                PlayerCmd::Prev => {
+                    if self.engine.position_secs() > 3.0
+                        && !self.at_chapter_start()
+                    {
+                        // restart current chapter
+                        let s = self.current_chapter_start();
+                        self.engine.seek(s);
+                    } else {
+                        self.chapter_step(false);
+                    }
+                }
+                PlayerCmd::Seek(s) => self.engine.seek(s),
+                PlayerCmd::ToggleShuffle | PlayerCmd::CycleRepeat => {}
+            }
+            return;
+        }
+
         match cmd {
             PlayerCmd::PlayPause => {
                 if self.queue.current().is_none() {
@@ -348,13 +562,72 @@ impl App {
         }
     }
 
-    /// Track finished naturally → advance the queue.
+    fn current_chapter_idx(&self) -> usize {
+        let pos = self.engine.position_secs();
+        self.current_book
+            .as_ref()
+            .map(|b| {
+                b.chapters
+                    .iter()
+                    .rposition(|c| pos + 0.5 >= c.start_secs)
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
+    }
+    fn current_chapter_start(&self) -> f64 {
+        let i = self.current_chapter_idx();
+        self.current_book
+            .as_ref()
+            .and_then(|b| b.chapters.get(i))
+            .map(|c| c.start_secs)
+            .unwrap_or(0.0)
+    }
+    fn at_chapter_start(&self) -> bool {
+        self.engine.position_secs() - self.current_chapter_start() < 2.0
+    }
+    fn chapter_step(&mut self, forward: bool) {
+        let Some(book) = &self.current_book else { return };
+        if book.chapters.is_empty() {
+            // No chapters: ±30s nudge.
+            self.engine.seek_rel(if forward { 30.0 } else { -30.0 });
+            return;
+        }
+        let i = self.current_chapter_idx();
+        let target = if forward {
+            (i + 1).min(book.chapters.len() - 1)
+        } else {
+            i.saturating_sub(1)
+        };
+        let s = book.chapters[target].start_secs;
+        self.engine.seek(s);
+    }
+
+    /// Track finished naturally → advance the queue (or end the book).
     fn poll_playback(&mut self) {
         if self.engine.take_ended() {
-            if self.queue.next().is_some() {
-                self.play_current();
+            if self.current_book.is_some() {
+                self.save_resume();
+                self.current_book = None;
+            } else {
+                if self.queue.next().is_some() {
+                    self.play_current();
+                }
+                self.save_queue();
             }
-            self.save_queue();
+        }
+        // Periodic resume autosave + sleep timer.
+        if self.current_book.is_some() && self.engine.is_playing() {
+            let iv = self.settings.resume_save_interval_secs.max(5);
+            if self.last_resume_save.elapsed().as_secs() >= iv {
+                self.save_resume();
+            }
+        }
+        if let Some(deadline) = self.sleep_deadline {
+            if Instant::now() >= deadline {
+                self.save_resume();
+                self.engine.pause();
+                self.sleep_deadline = None;
+            }
         }
     }
 
@@ -408,6 +681,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_scan();
+        self.poll_ab_scan();
         self.poll_playback();
         self.shortcuts(ctx);
 
@@ -425,6 +699,7 @@ impl eframe::App for App {
             .frame(panel_frame())
             .show(ctx, |ui| self.status_bar(ui));
 
+        let np = self.now_playing();
         let mut player_cmd = None;
         egui::TopBottomPanel::bottom("playerbar")
             .frame(panel_frame())
@@ -432,7 +707,7 @@ impl eframe::App for App {
                 player_cmd = player_bar::show(
                     ui,
                     &self.engine,
-                    self.queue.current(),
+                    np.as_ref(),
                     self.queue.shuffle,
                     &self.queue.repeat,
                 );
@@ -442,6 +717,12 @@ impl eframe::App for App {
         // self.playlists while other &mut self fields are in use.
         let pls = self.playlist_names();
         let selected_pl = self.lib.selected_playlist;
+        let resume_hint = self.resume.most_recent().and_then(|(id, pos)| {
+            self.db.audiobook_title(id).map(|t| {
+                let s = pos as u64;
+                format!("{t}  {}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+            })
+        });
 
         let mut sidebar_action = None;
         egui::SidePanel::left("sidebar")
@@ -449,8 +730,27 @@ impl eframe::App for App {
             .resizable(false)
             .frame(panel_frame())
             .show(ctx, |ui| {
-                sidebar_action = sidebar::show(ui, &mut self.view, &pls, selected_pl);
+                sidebar_action = sidebar::show(
+                    ui,
+                    &mut self.view,
+                    &pls,
+                    selected_pl,
+                    resume_hint.as_deref(),
+                );
             });
+
+        // Audiobook view inputs (owned so no self-borrow spans handle_view).
+        let books = if self.view == View::Audiobooks {
+            self.db.audiobooks()
+        } else {
+            Vec::new()
+        };
+        let playing_book = self.current_book.clone();
+        let book_pos = self.engine.position_secs();
+        let sleep_left = self.sleep_deadline.map(|d| {
+            (d.saturating_duration_since(Instant::now()).as_secs() / 60) + 1
+        });
+        let ab_status = self.ab_scan_status.clone();
 
         let mut view_action = None;
         egui::CentralPanel::default().show(ctx, |ui| match self.view {
@@ -468,13 +768,73 @@ impl eframe::App for App {
                 view_action =
                     playlists_view::show(ui, &self.db, &self.playlists, &mut self.lib)
             }
-            View::Folders => {
-                view_action =
-                    folders::show(ui, &self.settings, self.scan_status.as_deref());
+            View::Audiobooks => {
+                let resume = &self.resume;
+                let rp = |id: uuid::Uuid| resume.get(&id).map(|r| r.position_secs);
+                let playing = playing_book.as_ref().map(|b| (b, book_pos));
+                view_action = audiobooks_view::show(
+                    ui,
+                    &mut self.lib,
+                    &books,
+                    &rp,
+                    playing,
+                    sleep_left,
+                );
             }
-            View::Audiobooks => placeholder(ui, "AUDIOBOOKS", "Phase 6"),
+            View::Folders => {
+                view_action = folders::show(
+                    ui,
+                    &self.settings,
+                    self.scan_status.as_deref(),
+                    ab_status.as_deref(),
+                );
+            }
             View::Settings => placeholder(ui, "SETTINGS", "Phase 7"),
         });
+
+        // Resume dialog (modal-ish): offered when opening an in-progress book.
+        if let Some((book, pos)) = self.pending_resume.clone() {
+            egui::Window::new("RESUME")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(
+                        RichText::new(&book.title).size(12.0).color(CRT_GREEN),
+                    );
+                    let s = pos as u64;
+                    ui.label(
+                        RichText::new(format!(
+                            "> RESUME AT {}:{:02}:{:02}",
+                            s / 3600,
+                            (s % 3600) / 60,
+                            s % 60
+                        ))
+                        .size(11.0)
+                        .color(AMBER),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(RichText::new("[ RESUME ]").color(CRT_GREEN))
+                            .clicked()
+                        {
+                            self.pending_resume = None;
+                            self.play_book(book.clone(), pos);
+                        }
+                        if ui
+                            .button(RichText::new("[ RESTART ]").color(CRT_DIM))
+                            .clicked()
+                        {
+                            self.pending_resume = None;
+                            self.play_book(book.clone(), 0.0);
+                        }
+                        if ui.button(RichText::new("CANCEL").color(CRT_MID)).clicked() {
+                            self.pending_resume = None;
+                        }
+                    });
+                });
+        }
 
         if let Some(c) = player_cmd {
             self.handle_player(c);
@@ -491,6 +851,7 @@ impl eframe::App for App {
         self.save_settings();
         self.save_queue();
         self.save_playlists();
+        self.save_resume();
     }
 }
 
@@ -506,6 +867,7 @@ impl App {
                 ui.add_space(12.0);
             };
             item(ui, "LIBRARY:", &format!("{} TRACKS", self.track_count));
+            item(ui, "BOOKS:", &format!("{}", self.db.audiobook_count()));
             item(ui, "QUEUE:", &format!("{} TRACKS", self.queue.len()));
             if let Some(t) = &cur {
                 item(ui, "CODEC:", if info.codec.is_empty() { &t.codec } else { &info.codec });

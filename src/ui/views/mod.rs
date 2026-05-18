@@ -6,6 +6,7 @@
 
 pub mod albums;
 pub mod artists;
+pub mod audiobooks;
 pub mod folders;
 pub mod playlists;
 pub mod queue;
@@ -123,6 +124,14 @@ pub enum ViewAction {
     PlaylistImport,
     /// Add a track to an existing playlist, or `None` = new playlist.
     PlaylistAddTrack { playlist: Option<uuid::Uuid>, track: Track },
+    /// Audiobooks.
+    AddAudiobookFolder,
+    RemoveAudiobookFolder(PathBuf),
+    ScanAudiobooks,
+    OpenAudiobook(uuid::Uuid),
+    ChapterSeek(f64),
+    SetSleepTimer(Option<u64>), // minutes; None = off
+    ResumeLastBook,
 }
 
 /// Per-row interaction: double-click or a context-menu pick.
@@ -209,6 +218,9 @@ pub struct LibraryUi {
     pub selected_playlist: Option<uuid::Uuid>,
     /// Inline rename buffer for the selected playlist (None = not renaming).
     pub rename_buf: Option<String>,
+    pub ab_search: String,
+    /// 0=title 1=author 2=genre 3=progress
+    pub ab_sort: u8,
 
     cache_key: Option<CacheKey>,
     cache: Vec<Track>,
@@ -233,6 +245,8 @@ impl Default for LibraryUi {
             album_filter: None,
             selected_playlist: None,
             rename_buf: None,
+            ab_search: String::new(),
+            ab_sort: 0,
             cache_key: None,
             cache: Vec::new(),
             cache_offset: 0,

@@ -20,6 +20,16 @@ fn main() -> eframe::Result<()> {
         library::scanner::smoke(&folder);
         return Ok(());
     }
+    if args.get(1).map(|s| s.as_str()) == Some("--ab-smoke") {
+        let p = args.get(2).map(std::path::PathBuf::from).unwrap_or_default();
+        audiobooks::scanner::smoke(&p);
+        return Ok(());
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--chapter-spike") {
+        let p = args.get(2).map(std::path::PathBuf::from).unwrap_or_default();
+        audiobooks::chapters::spike(&p);
+        return Ok(());
+    }
     if args.get(1).map(|s| s.as_str()) == Some("--play-smoke") {
         let path = args.get(2).map(std::path::PathBuf::from).unwrap_or_default();
         let start: f64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.0);
