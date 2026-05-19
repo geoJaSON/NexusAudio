@@ -24,6 +24,32 @@ use crate::ui::views::{
 };
 use crate::ui::{sidebar, titlebar, View};
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+struct MediaCache {
+    track_title: Option<String>,
+    track_subtitle: Option<String>,
+    has_track: bool,
+    playing: bool,
+    volume: f32,
+    last_position_secs: f64,
+    last_position_update: std::time::Instant,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl Default for MediaCache {
+    fn default() -> Self {
+        Self {
+            track_title: None,
+            track_subtitle: None,
+            has_track: false,
+            playing: false,
+            volume: 0.0,
+            last_position_secs: 0.0,
+            last_position_update: std::time::Instant::now(),
+        }
+    }
+}
+
 pub struct App {
     db: Db,
     db_path: Option<PathBuf>,
@@ -53,6 +79,15 @@ pub struct App {
     /// Every track started this session (newest last), independent of queue
     /// replacement — drives the slide-out's "played this session".
     session_history: Vec<crate::library::models::Track>,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    media_controls: Option<souvlaki::MediaControls>,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[allow(dead_code)]
+    media_tx: std::sync::mpsc::Sender<souvlaki::MediaControlEvent>,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    media_rx: std::sync::mpsc::Receiver<souvlaki::MediaControlEvent>,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    media_cache: MediaCache,
 }
 
 impl App {
@@ -87,6 +122,35 @@ impl App {
             .map(|d| ResumeStore::load(d))
             .unwrap_or_default();
 
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        let (media_tx, media_rx) = std::sync::mpsc::channel();
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        let _ = &media_tx;
+
+        #[cfg(target_os = "linux")]
+        let media_controls = {
+            let config = souvlaki::PlatformConfig {
+                dbus_name: "org.mpris.MediaPlayer2.nexus_audio",
+                display_name: "NEXUS//AUDIO",
+                hwnd: None,
+            };
+            match souvlaki::MediaControls::new(config) {
+                Ok(mut controls) => {
+                    let tx = media_tx.clone();
+                    let _ = controls.attach(move |event| {
+                        let _ = tx.send(event);
+                    });
+                    Some(controls)
+                }
+                Err(e) => {
+                    eprintln!("Failed to initialize media controls: {e}");
+                    None
+                }
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let media_controls = None;
+
         let mut app = Self {
             db,
             db_path,
@@ -111,6 +175,14 @@ impl App {
             tag_edit_error: None,
             show_queue: false,
             session_history: Vec::new(),
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            media_controls,
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            media_tx,
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            media_rx,
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            media_cache: MediaCache::default(),
         };
         // Restore the saved queue (list + cursor + modes), idle until played.
         if let Some(dir) = &app.data_dir {
@@ -765,10 +837,191 @@ impl App {
             self.show_queue = !self.show_queue;
         }
     }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn poll_media_events(&mut self) {
+        while let Ok(event) = self.media_rx.try_recv() {
+            match event {
+                souvlaki::MediaControlEvent::Play => {
+                    if !self.engine.is_playing() {
+                        if self.engine.has_track() {
+                            self.engine.play();
+                        } else {
+                            self.play_current();
+                        }
+                    }
+                }
+                souvlaki::MediaControlEvent::Pause => {
+                    if self.engine.is_playing() {
+                        if self.current_book.is_some() {
+                            self.save_resume();
+                        }
+                        self.engine.pause();
+                    }
+                }
+                souvlaki::MediaControlEvent::Toggle => {
+                    self.handle_player(PlayerCmd::PlayPause);
+                }
+                souvlaki::MediaControlEvent::Next => {
+                    self.handle_player(PlayerCmd::Next);
+                }
+                souvlaki::MediaControlEvent::Previous => {
+                    self.handle_player(PlayerCmd::Prev);
+                }
+                souvlaki::MediaControlEvent::Stop => {
+                    self.handle_player(PlayerCmd::Stop);
+                }
+                souvlaki::MediaControlEvent::SetVolume(vol) => {
+                    self.engine.set_volume(vol as f32);
+                }
+                souvlaki::MediaControlEvent::SetPosition(souvlaki::MediaPosition(duration)) => {
+                    self.engine.seek(duration.as_secs_f64());
+                }
+                souvlaki::MediaControlEvent::SeekBy(direction, duration) => {
+                    let delta = duration.as_secs_f64();
+                    let delta = match direction {
+                        souvlaki::SeekDirection::Forward => delta,
+                        souvlaki::SeekDirection::Backward => -delta,
+                    };
+                    self.engine.seek_rel(delta);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn update_media_controls(&mut self) {
+        if self.media_controls.is_none() {
+            return;
+        }
+
+        let is_playing = self.engine.is_playing();
+        let has_track = self.engine.has_track();
+        let np = self.now_playing();
+        let vol = self.engine.volume();
+
+        let changed_track = np.as_ref().map(|n| &n.title) != self.media_cache.track_title.as_ref()
+            || np.as_ref().map(|n| &n.subtitle) != self.media_cache.track_subtitle.as_ref()
+            || has_track != self.media_cache.has_track;
+
+        let changed_playback = is_playing != self.media_cache.playing || changed_track;
+        let changed_volume = (vol - self.media_cache.volume).abs() > 0.01;
+
+        // Detect manual seek or unexpected position jumps
+        let pos_secs = self.engine.position_secs();
+        let expected_pos = if is_playing {
+            self.media_cache.last_position_secs + self.media_cache.last_position_update.elapsed().as_secs_f64()
+        } else {
+            self.media_cache.last_position_secs
+        };
+        let is_seek = (pos_secs - expected_pos).abs() > 1.5;
+
+        // Query extra properties from self BEFORE borrowing media_controls mutably
+        let current_book_author = self.current_book.as_ref().map(|b| b.author.clone());
+        let queue_current_artist = self.queue.current().map(|t| t.artist.clone());
+        let queue_current_album = self.queue.current().map(|t| t.album.clone());
+        let duration_secs = self.engine.duration_secs();
+        let is_current_book = self.current_book.is_some();
+
+        let controls = self.media_controls.as_mut().unwrap();
+
+        if changed_track {
+            if has_track {
+                if let Some(n) = &np {
+                    let title = n.title.clone();
+                    let artist = if is_current_book {
+                        current_book_author.unwrap_or_default()
+                    } else {
+                        queue_current_artist.unwrap_or_default()
+                    };
+                    let album = if is_current_book {
+                        String::new()
+                    } else {
+                        queue_current_album.unwrap_or_default()
+                    };
+
+                    let metadata = souvlaki::MediaMetadata {
+                        title: Some(&title),
+                        artist: Some(&artist),
+                        album: Some(&album),
+                        cover_url: None,
+                        duration: Some(std::time::Duration::from_secs_f64(duration_secs)),
+                    };
+                    let _ = controls.set_metadata(metadata);
+                    
+                    self.media_cache.track_title = Some(n.title.clone());
+                    self.media_cache.track_subtitle = Some(n.subtitle.clone());
+                }
+            } else {
+                let metadata = souvlaki::MediaMetadata::default();
+                let _ = controls.set_metadata(metadata);
+                self.media_cache.track_title = None;
+                self.media_cache.track_subtitle = None;
+            }
+            self.media_cache.has_track = has_track;
+        }
+
+        if changed_playback || is_seek {
+            let progress = if has_track {
+                Some(souvlaki::MediaPosition(std::time::Duration::from_secs_f64(pos_secs)))
+            } else {
+                None
+            };
+            let state = if !has_track {
+                souvlaki::MediaPlayback::Stopped
+            } else if is_playing {
+                souvlaki::MediaPlayback::Playing { progress }
+            } else {
+                souvlaki::MediaPlayback::Paused { progress }
+            };
+            let _ = controls.set_playback(state);
+            self.media_cache.playing = is_playing;
+            self.media_cache.last_position_secs = pos_secs;
+            self.media_cache.last_position_update = std::time::Instant::now();
+        }
+
+        if changed_volume {
+            #[cfg(target_os = "linux")]
+            let _ = controls.set_volume(vol as f64);
+            self.media_cache.volume = vol;
+        }
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "windows")]
+        if self.media_controls.is_none() {
+            use eframe::raw_window_handle::HasWindowHandle;
+            if let Ok(handle) = _frame.window_handle() {
+                if let eframe::raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() {
+                    let hwnd = h.hwnd.get() as *mut std::ffi::c_void;
+                    let config = souvlaki::PlatformConfig {
+                        dbus_name: "org.mpris.MediaPlayer2.nexus_audio",
+                        display_name: "NEXUS//AUDIO",
+                        hwnd: Some(hwnd),
+                    };
+                    match souvlaki::MediaControls::new(config) {
+                        Ok(mut controls) => {
+                            let tx = self.media_tx.clone();
+                            let _ = controls.attach(move |event| {
+                                let _ = tx.send(event);
+                            });
+                            self.media_controls = Some(controls);
+                            println!("Media controls initialized on Windows");
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to initialize media controls on Windows: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        self.poll_media_events();
+
         self.poll_scan();
         self.poll_ab_scan();
         self.poll_playback();
@@ -1030,6 +1283,9 @@ impl eframe::App for App {
         if let Some(a) = queue_action {
             self.handle_view(a);
         }
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        self.update_media_controls();
     }
 
     fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
@@ -1037,6 +1293,13 @@ impl eframe::App for App {
         self.save_queue();
         self.save_playlists();
         self.save_resume();
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            if let Some(mut controls) = self.media_controls.take() {
+                let _ = controls.set_playback(souvlaki::MediaPlayback::Stopped);
+            }
+        }
     }
 }
 

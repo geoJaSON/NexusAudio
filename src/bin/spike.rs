@@ -118,7 +118,7 @@ fn main() -> Result<()> {
     let mut decoded_frames: u64 = 0;
 
     // Push one decoded buffer into the ring, normalized to stereo.
-    let mut push = |sb: &SampleBuffer<f32>, ch: usize, ring: &Ring, frames: &mut u64| {
+    let push = |sb: &SampleBuffer<f32>, ch: usize, ring: &Ring, frames: &mut u64| {
         let s = sb.samples();
         let mut r = ring.lock().unwrap();
         match ch {
@@ -203,11 +203,10 @@ fn main() -> Result<()> {
     let ring_cb = ring.clone();
     let mut frac = 0.0f64;
     let mut cur = [0.0f32; 2];
-    let mut nxt = [0.0f32; 2];
-    let mut next_frame = move || -> [f32; 2] {
+    let next_frame = move || -> [f32; 2] {
         ring_cb.lock().unwrap().pop_front().unwrap_or([0.0, 0.0])
     };
-    nxt = next_frame();
+    let mut nxt = next_frame();
     let mut fill = move |out: &mut [f32]| {
         for frame in out.chunks_mut(dev_ch) {
             let l = cur[0] + (nxt[0] - cur[0]) * frac as f32;
