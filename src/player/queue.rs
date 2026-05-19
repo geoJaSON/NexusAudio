@@ -49,6 +49,9 @@ impl Queue {
     pub fn len(&self) -> usize {
         self.order.len()
     }
+    pub fn pos(&self) -> Option<usize> {
+        self.pos
+    }
 
     // ---- cursor / navigation ----
 
@@ -79,15 +82,10 @@ impl Queue {
         self.current()
     }
 
-    /// Jump straight to the Nth upcoming entry (0 = the next one).
-    pub fn jump_upcoming(&mut self, i: usize) -> Option<&Track> {
-        if let Some(p) = self.pos {
-            let target = p + 1 + i;
-            if target < self.order.len() {
-                self.pos = Some(target);
-            }
-        } else if i < self.order.len() {
-            self.pos = Some(i);
+    /// Jump straight to the Nth entry in the play order.
+    pub fn jump_upcoming(&mut self, idx: usize) -> Option<&Track> {
+        if idx < self.order.len() {
+            self.pos = Some(idx);
         }
         self.current()
     }
@@ -95,6 +93,7 @@ impl Queue {
     // ---- views for the queue panel ----
 
     /// Upcoming tracks in play order (after the cursor).
+    #[allow(dead_code)]
     pub fn upcoming(&self) -> Vec<&Track> {
         let start = self.pos.map(|p| p + 1).unwrap_or(0);
         self.order[start.min(self.order.len())..]
@@ -142,11 +141,27 @@ impl Queue {
         }
     }
 
-    pub fn remove_upcoming(&mut self, i: usize) {
-        let start = self.pos.map(|p| p + 1).unwrap_or(0);
-        let at = start + i;
-        if at < self.order.len() {
-            self.order.remove(at); // item left orphaned in `items` — harmless
+    pub fn remove_upcoming(&mut self, idx: usize) {
+        if idx < self.order.len() {
+            self.order.remove(idx);
+            // Adjust cursor if necessary:
+            if let Some(p) = self.pos {
+                if p >= self.order.len() {
+                    if self.order.is_empty() {
+                        self.pos = None;
+                    } else {
+                        self.pos = Some(self.order.len() - 1);
+                    }
+                } else if p > idx {
+                    self.pos = Some(p - 1);
+                } else if p == idx {
+                    if self.order.is_empty() {
+                        self.pos = None;
+                    } else {
+                        self.pos = Some(p.min(self.order.len() - 1));
+                    }
+                }
+            }
         }
     }
 
@@ -155,13 +170,20 @@ impl Queue {
         self.order.truncate(start.min(self.order.len()));
     }
 
-    /// Move an upcoming entry up (toward now-playing) or down.
-    pub fn move_upcoming(&mut self, i: usize, up: bool) {
-        let start = self.pos.map(|p| p + 1).unwrap_or(0);
-        let a = start + i;
+    /// Move an entry up (toward start) or down.
+    pub fn move_upcoming(&mut self, idx: usize, up: bool) {
+        let a = idx;
         let b = if up { a.wrapping_sub(1) } else { a + 1 };
-        if a < self.order.len() && b >= start && b < self.order.len() {
+        if a < self.order.len() && b < self.order.len() {
             self.order.swap(a, b);
+            // Adjust the cursor if it was one of the swapped items!
+            if let Some(p) = self.pos {
+                if p == a {
+                    self.pos = Some(b);
+                } else if p == b {
+                    self.pos = Some(a);
+                }
+            }
         }
     }
 
