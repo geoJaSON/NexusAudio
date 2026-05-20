@@ -32,15 +32,15 @@ pub fn show(
             action = Some(ViewAction::CreatePlaylistFromQueue);
         }
         if ui
-            .button(RichText::new("CLEAR UPCOMING").size(9.0).color(AMBER))
-            .on_hover_text("Clear upcoming tracks from the queue")
+            .button(RichText::new("CLEAR ALL").size(9.0).color(AMBER))
+            .on_hover_text("Clear all tracks from the queue and stop playback")
             .clicked()
         {
             action = Some(ViewAction::QueueClear);
         }
         if queue.current().is_some() {
             if ui
-                .button(RichText::new("SHOW CURRENT").size(9.0).color(CRT_GREEN))
+                .button(RichText::new("⌖").size(10.0).color(CRT_GREEN))
                 .on_hover_text("Scroll the view to center on the currently playing track")
                 .clicked()
             {
@@ -181,9 +181,14 @@ pub fn show(
                         });
                     });
 
-                    // Sense clicks on the whole row rect for double-click!
+                    // Sense clicks on the left part of the row rect to avoid occluding buttons!
+                    let rect = frame_resp.response.rect;
+                    let click_rect = egui::Rect::from_min_max(
+                        rect.min,
+                        egui::pos2(rect.max.x - 130.0, rect.max.y),
+                    );
                     let row_id = ui.make_persistent_id(("row_interact", &t.path));
-                    let row_resp = ui.interact(frame_resp.response.rect, row_id, egui::Sense::click());
+                    let row_resp = ui.interact(click_rect, row_id, egui::Sense::click());
                     if row_resp.double_clicked() {
                         action = Some(ViewAction::QueueJump(i));
                     }

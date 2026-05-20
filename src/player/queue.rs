@@ -165,6 +165,7 @@ impl Queue {
         }
     }
 
+    #[allow(dead_code)]
     pub fn clear_upcoming(&mut self) {
         let start = self.pos.map(|p| p + 1).unwrap_or(0);
         self.order.truncate(start.min(self.order.len()));

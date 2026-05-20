@@ -45,6 +45,21 @@ pub fn show(
                 state.invalidate();
             }
         }
+        ui.add_space(8.0);
+        if ui
+            .button(RichText::new("> PLAY ALL").size(9.0).color(CRT_GREEN))
+            .on_hover_text("Play all tracks matching search/filter")
+            .clicked()
+        {
+            let all = db
+                .tracks_page(&state.search, state.sort, PLAY_CAP, 0)
+                .unwrap_or_default();
+            action = Some(ViewAction::Play {
+                list: all,
+                index: 0,
+                shuffle: false,
+            });
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new(format!("{} TRACKS", state.total))
@@ -99,16 +114,14 @@ pub fn show(
             }
         });
 
-    if let Some((a, global, track)) = hit {
+    if let Some((a, _global, track)) = hit {
         action = Some(match a {
             super::RowAction::Play => {
-                // Build the queue from the current filtered/sorted view so
-                // next/prev are meaningful, then start at the clicked row.
-                let list = db
-                    .tracks_page(&state.search, state.sort, PLAY_CAP, 0)
-                    .unwrap_or_default();
-                let index = global.min(list.len().saturating_sub(1));
-                ViewAction::Play { list, index, shuffle: false }
+                ViewAction::Play {
+                    list: vec![track],
+                    index: 0,
+                    shuffle: false,
+                }
             }
             super::RowAction::PlayNext => ViewAction::Enqueue { track, next: true },
             super::RowAction::AddToQueue => ViewAction::Enqueue { track, next: false },

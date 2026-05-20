@@ -476,7 +476,8 @@ impl App {
                 self.save_queue();
             }
             ViewAction::QueueClear => {
-                self.queue.clear_upcoming();
+                self.queue.clear();
+                self.handle_player(crate::app::PlayerCmd::Stop);
                 self.save_queue();
             }
             ViewAction::PlaylistSelect(id) => {

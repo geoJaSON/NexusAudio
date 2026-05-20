@@ -203,7 +203,11 @@ pub fn row_actions(
 pub fn list_action(list: Vec<Track>, pick: Option<(usize, RowAction)>) -> Option<ViewAction> {
     let (index, a) = pick?;
     Some(match a {
-        RowAction::Play => ViewAction::Play { list, index, shuffle: false },
+        RowAction::Play => ViewAction::Play {
+            list: vec![list.get(index)?.clone()],
+            index: 0,
+            shuffle: false,
+        },
         RowAction::PlayNext => ViewAction::Enqueue {
             track: list.get(index)?.clone(),
             next: true,
