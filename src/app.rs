@@ -994,9 +994,9 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "windows")]
         if self.media_controls.is_none() {
-            use eframe::raw_window_handle::HasWindowHandle;
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
             if let Ok(handle) = _frame.window_handle() {
-                if let eframe::raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() {
+                if let RawWindowHandle::Win32(h) = handle.as_raw() {
                     let hwnd = h.hwnd.get() as *mut std::ffi::c_void;
                     let config = souvlaki::PlatformConfig {
                         dbus_name: "org.mpris.MediaPlayer2.nexus_audio",
