@@ -92,7 +92,7 @@ pub fn list_row_actions(
     }
 
     let id = ui.make_persistent_id(("nexus_list_row", rect.min.y.to_bits()));
-    let resp = ui.interact(hit_rect, id, egui::Sense::click());
+    let resp = ui.interact(hit_rect, id, egui::Sense::click_and_drag());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }

@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, RichText};
 
-use super::theme::{AMBER, CRT_DIM, CRT_GREEN, CRT_MID};
+use super::theme::{AMBER, CRT_DIM, CRT_GREEN, CRT_MID, ROW_HOVER};
 use super::views::ViewAction;
 use super::View;
 
@@ -40,6 +40,19 @@ pub fn show(
             })
             .inner
             .interact(egui::Sense::click());
+
+        // Handle active Drag & Drop hover and drop action
+        if let Some(_hovered_track) = resp.dnd_hover_payload::<crate::library::models::Track>() {
+            ui.painter().rect_filled(resp.rect, 2.0, ROW_HOVER);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+        }
+        if let Some(dropped_track) = resp.dnd_release_payload::<crate::library::models::Track>() {
+            action = Some(ViewAction::PlaylistAddTrack {
+                playlist: Some(*id),
+                track: (*dropped_track).clone(),
+            });
+        }
+
         if resp.clicked() {
             action = Some(ViewAction::PlaylistSelect(*id));
         }

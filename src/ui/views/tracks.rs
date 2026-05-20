@@ -88,6 +88,9 @@ pub fn show(
             for (i, t) in page.iter().enumerate() {
                 let num = range.start + i + 1;
                 let (resp, add_q) = track_row(ui, num, t);
+                if resp.dragged() {
+                    resp.dnd_set_drag_payload(t.clone());
+                }
                 if add_q {
                     hit = Some((super::RowAction::AddToQueue, range.start + i, t.clone()));
                 } else if let Some(a) = super::row_actions(&resp, playlists) {

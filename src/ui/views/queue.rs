@@ -38,6 +38,15 @@ pub fn show(
         {
             action = Some(ViewAction::QueueClear);
         }
+        if queue.current().is_some() {
+            if ui
+                .button(RichText::new("SHOW CURRENT").size(9.0).color(CRT_GREEN))
+                .on_hover_text("Scroll the view to center on the currently playing track")
+                .clicked()
+            {
+                ui.data_mut(|data| data.insert_temp(ui.make_persistent_id("scroll_to_active"), true));
+            }
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new(format!("{} QUEUED", queue.len()))
@@ -67,7 +76,7 @@ pub fn show(
                         frame = frame.fill(crate::ui::theme::ROW_HOVER);
                     }
 
-                    frame.show(ui, |ui| {
+                    let frame_resp = frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.add_space(8.0);
 
@@ -171,6 +180,40 @@ pub fn show(
                             );
                         });
                     });
+
+                    // Sense clicks on the whole row rect for double-click!
+                    let row_id = ui.make_persistent_id(("row_interact", &t.path));
+                    let row_resp = ui.interact(frame_resp.response.rect, row_id, egui::Sense::click());
+                    if row_resp.double_clicked() {
+                        action = Some(ViewAction::QueueJump(i));
+                    }
+                    if row_resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+
+                    // Auto-scroll / manual scroll to active row
+                    let mut should_scroll = false;
+                    if is_active {
+                        // 1. Manual scroll to active:
+                        let force_scroll: Option<bool> = ui.data_mut(|data| {
+                            data.remove_temp(ui.make_persistent_id("scroll_to_active"))
+                        });
+                        if force_scroll == Some(true) {
+                            should_scroll = true;
+                        }
+
+                        // 2. Auto-scroll on track change:
+                        let scroll_id = ui.make_persistent_id("last_scrolled_active_pos");
+                        let last_pos: Option<usize> = ui.data(|data| data.get_temp(scroll_id));
+                        if last_pos != Some(i) {
+                            should_scroll = true;
+                            ui.data_mut(|data| data.insert_temp(scroll_id, i));
+                        }
+                    }
+
+                    if should_scroll {
+                        row_resp.scroll_to_me(Some(egui::Align::Center));
+                    }
                     ui.separator();
                 }
             }
