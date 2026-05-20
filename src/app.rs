@@ -1036,9 +1036,10 @@ impl eframe::App for App {
         }
 
         let eq = self.settings.eq_enabled;
+        let is_playing = self.engine.is_playing();
         egui::TopBottomPanel::top("titlebar")
             .frame(panel_frame())
-            .show(ctx, |ui| titlebar::show(ui, eq));
+            .show(ctx, |ui| titlebar::show(ui, eq, is_playing));
 
         egui::TopBottomPanel::bottom("statusbar")
             .frame(panel_frame())
