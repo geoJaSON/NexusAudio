@@ -14,12 +14,14 @@ pub mod queue;
 pub mod settings;
 pub mod tracks;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
-use eframe::egui;
+use eframe::egui::{self, RichText};
 
 use crate::library::db::SortKey;
 use crate::library::models::Track;
+use crate::ui::theme::{AMBER, CRT_GREEN, CRT_MID};
 
 /// `(playlist id, name)` pairs for the "Add to Playlist" submenu.
 pub type Playlists<'a> = &'a [(uuid::Uuid, String)];
@@ -99,6 +101,150 @@ pub fn list_row_actions(
     resp
 }
 
+/// How long the pointer must be held still on a row before it counts as a
+/// long-press (used for "click-and-hold" multi-select entry).
+const LONG_PRESS_SECS: f64 = 0.35;
+
+/// Tracks a click-and-hold gesture on a row. `just_fired` is true exactly
+/// on the frame the threshold is crossed; `suppress_click` stays true until
+/// the user releases, so the normal click/double-click handlers can skip
+/// firing on the same press.
+pub struct LongPress {
+    pub just_fired: bool,
+    pub suppress_click: bool,
+}
+
+pub fn check_long_press(ui: &mut egui::Ui, resp: &egui::Response, flag_id: egui::Id) -> LongPress {
+    let mut fired: bool = ui.data(|d| d.get_temp(flag_id).unwrap_or(false));
+    let mut just_fired = false;
+    if resp.is_pointer_button_down_on() {
+        if !fired {
+            let press_start = ui.ctx().input(|i| i.pointer.press_start_time());
+            let now = ui.ctx().input(|i| i.time);
+            if let Some(start) = press_start {
+                let elapsed = now - start;
+                if elapsed > LONG_PRESS_SECS {
+                    fired = true;
+                    just_fired = true;
+                    ui.data_mut(|d| d.insert_temp(flag_id, true));
+                    // Force a repaint so the selection outline appears
+                    // immediately (we just toggled state mid-frame).
+                    ui.ctx().request_repaint();
+                } else {
+                    // egui only repaints on input change — a perfectly-still
+                    // hold would otherwise sit idle past the threshold and
+                    // miss the long-press. Schedule a wake-up.
+                    let remaining = LONG_PRESS_SECS - elapsed;
+                    ui.ctx().request_repaint_after(
+                        std::time::Duration::from_secs_f64(remaining.max(0.02)),
+                    );
+                }
+            }
+        }
+    } else if fired {
+        // Press has just ended — clear for the next press, but keep
+        // suppress_click=true this frame so the trailing click is ignored.
+        ui.data_mut(|d| d.remove_temp::<bool>(flag_id));
+    }
+    LongPress { just_fired, suppress_click: fired }
+}
+
+/// Paint an amber outline around a row to indicate it is in the multi-select.
+pub fn paint_selected_outline(ui: &egui::Ui, rect: egui::Rect) {
+    ui.painter().rect_stroke(
+        rect.shrink(1.0),
+        0.0,
+        egui::Stroke::new(1.0, AMBER),
+    );
+}
+
+/// Bulk action chosen from the selection toolbar.
+#[derive(Debug, Clone)]
+pub enum SelectionAction {
+    AddToQueue,
+    AddToPlaylist(Option<uuid::Uuid>),
+    Clear,
+}
+
+/// Toolbar shown above a track list when one or more tracks are selected.
+/// Returns the chosen bulk action, if any.
+pub fn selection_toolbar(
+    ui: &mut egui::Ui,
+    count: usize,
+    playlists: Playlists,
+) -> Option<SelectionAction> {
+    if count == 0 {
+        return None;
+    }
+    let mut act = None;
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(format!("[{count} SELECTED]"))
+                .size(10.0)
+                .color(AMBER),
+        );
+        ui.add_space(4.0);
+        if ui
+            .button(RichText::new("+Q TO QUEUE").size(10.0).color(CRT_GREEN))
+            .on_hover_text("Add selection to the playback queue")
+            .clicked()
+        {
+            act = Some(SelectionAction::AddToQueue);
+        }
+        ui.menu_button(
+            RichText::new("+ TO PLAYLIST").size(10.0).color(CRT_GREEN),
+            |ui| {
+                if ui.button("[ NEW PLAYLIST ]").clicked() {
+                    act = Some(SelectionAction::AddToPlaylist(None));
+                    ui.close_menu();
+                }
+                if !playlists.is_empty() {
+                    ui.separator();
+                }
+                for (id, name) in playlists {
+                    if ui.button(name).clicked() {
+                        act = Some(SelectionAction::AddToPlaylist(Some(*id)));
+                        ui.close_menu();
+                    }
+                }
+            },
+        );
+        if ui
+            .button(RichText::new("CLEAR").size(10.0).color(AMBER))
+            .clicked()
+        {
+            act = Some(SelectionAction::Clear);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                RichText::new("HOLD A ROW TO SELECT  ·  CLICK TO TOGGLE")
+                    .size(9.0)
+                    .color(CRT_MID),
+            );
+        });
+    });
+    ui.separator();
+    act
+}
+
+/// Convert a selection action + tracks (the ones currently visible) and the
+/// full selected-id set into the matching `ViewAction`. The caller is
+/// responsible for resolving track ids → tracks via DB if needed.
+pub fn selection_to_view_action(
+    sel: SelectionAction,
+    tracks: Vec<Track>,
+) -> Option<ViewAction> {
+    match sel {
+        SelectionAction::AddToQueue => Some(ViewAction::BulkEnqueue(tracks)),
+        SelectionAction::AddToPlaylist(playlist) => Some(ViewAction::BulkAddToPlaylist {
+            playlist,
+            tracks,
+        }),
+        SelectionAction::Clear => Some(ViewAction::ClearSelection),
+    }
+}
+
 /// Side-effect requests a view hands back to the App.
 #[derive(Debug, Clone)]
 pub enum ViewAction {
@@ -139,6 +285,18 @@ pub enum ViewAction {
     SettingsChanged,
     EditTags(Track),
     CreatePlaylistFromQueue,
+    /// Toggle the slide-out queue panel.
+    ToggleQueuePanel,
+    /// Append the given tracks to the queue in order.
+    BulkEnqueue(Vec<Track>),
+    /// Add tracks to an existing playlist (or a brand-new one if `playlist`
+    /// is `None`). Used by the multi-select toolbar and dnd of `Vec<Track>`.
+    BulkAddToPlaylist {
+        playlist: Option<uuid::Uuid>,
+        tracks: Vec<Track>,
+    },
+    /// Empty the multi-select set.
+    ClearSelection,
 }
 
 /// Per-row interaction: double-click or a context-menu pick.
@@ -239,6 +397,10 @@ pub struct LibraryUi {
     pub ab_search: String,
     /// 0=title 1=author 2=genre 3=progress
     pub ab_sort: u8,
+    /// Track ids the user has multi-selected (click-and-hold + click to toggle).
+    /// Spans views — selections persist when you navigate between Tracks /
+    /// Artists / Albums / Genres / Playlists.
+    pub selected: HashSet<uuid::Uuid>,
 
     cache_key: Option<CacheKey>,
     cache: Vec<Track>,
@@ -266,6 +428,7 @@ impl Default for LibraryUi {
             rename_buf: None,
             ab_search: String::new(),
             ab_sort: 0,
+            selected: HashSet::new(),
             cache_key: None,
             cache: Vec::new(),
             cache_offset: 0,

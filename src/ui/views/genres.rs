@@ -38,7 +38,14 @@ pub fn show(
         if let Some(shuffle) = bulk {
             return Some(ViewAction::Play { list, index: 0, shuffle });
         }
-        let pick = super::artists::track_list(ui, &list, playlists);
+        if let Some(sa) = super::selection_toolbar(ui, state.selected.len(), playlists) {
+            let ids: Vec<uuid::Uuid> = state.selected.iter().cloned().collect();
+            let tracks = db.tracks_by_ids(&ids);
+            if let Some(a) = super::selection_to_view_action(sa, tracks) {
+                return Some(a);
+            }
+        }
+        let pick = super::artists::track_list(ui, db, state, &list, playlists);
         return super::list_action(list, pick);
     }
 

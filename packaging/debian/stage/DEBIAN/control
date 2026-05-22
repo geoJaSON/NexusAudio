@@ -1,0 +1,14 @@
+Package: nexus-audio
+Version: 2.4.1
+Section: sound
+Priority: optional
+Architecture: amd64
+Installed-Size: 22220
+Maintainer: Jason Jordan <jasjordan@proton.me>
+Homepage: https://github.com/jasjordan/NexusAudio
+Depends: libasound2 | libasound2t64, libc6, libgcc-s1
+Recommends: libxkbcommon0, libwayland-client0, libxcb1, libgl1
+Description: NEXUS//AUDIO - retro terminal music and audiobook player
+ Linux-first music & audiobook player with a retro CRT-terminal UI.
+ Supports MP3, FLAC, OGG/Vorbis, AAC, ALAC, WAV, and ISO MP4 audio via
+ Symphonia, with cpal-based playback and MPRIS media-key integration.

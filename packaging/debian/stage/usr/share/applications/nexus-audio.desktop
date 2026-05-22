@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=NEXUS//AUDIO
+GenericName=Audio Player
+Comment=Retro terminal music and audiobook player
+Exec=nexus-audio
+Icon=nexus-audio
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=audio;music;audiobook;player;retro;
+StartupWMClass=nexus_audio
+StartupNotify=true

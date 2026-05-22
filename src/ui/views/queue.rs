@@ -188,9 +188,13 @@ pub fn show(
                         egui::pos2(rect.max.x - 130.0, rect.max.y),
                     );
                     let row_id = ui.make_persistent_id(("row_interact", &t.path));
-                    let row_resp = ui.interact(click_rect, row_id, egui::Sense::click());
+                    let row_resp =
+                        ui.interact(click_rect, row_id, egui::Sense::click_and_drag());
                     if row_resp.double_clicked() {
                         action = Some(ViewAction::QueueJump(i));
+                    }
+                    if row_resp.dragged() {
+                        row_resp.dnd_set_drag_payload((**t).clone());
                     }
                     if row_resp.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

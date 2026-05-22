@@ -5,6 +5,7 @@ use eframe::egui::{self, RichText};
 
 use super::{LibraryUi, ViewAction};
 use crate::library::db::{Db, SortKey};
+use crate::library::models::Track;
 use crate::ui::theme::{CRT_DIM, CRT_GREEN, CRT_MID};
 
 const ROW_H: f32 = 36.0;
@@ -69,6 +70,13 @@ pub fn show(
         });
     });
 
+    // Selection toolbar (visible whenever any tracks are selected).
+    if let Some(sa) = super::selection_toolbar(ui, state.selected.len(), playlists) {
+        let ids: Vec<uuid::Uuid> = state.selected.iter().cloned().collect();
+        let tracks = db.tracks_by_ids(&ids);
+        action = super::selection_to_view_action(sa, tracks);
+    }
+
     ui.add_space(2.0);
     header_row(ui);
     ui.separator();
@@ -93,26 +101,67 @@ pub fn show(
     }
 
     // (RowAction, global index, the track) captured during the row pass.
-    let mut hit: Option<(super::RowAction, usize, crate::library::models::Track)> = None;
+    let mut hit: Option<(super::RowAction, usize, Track)> = None;
+    let mut toggle_select: Option<uuid::Uuid> = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show_rows(ui, ROW_H, total, |ui, range| {
             let offset = range.start as i64;
             let limit = (range.end - range.start) as i64;
             let page = state.page(db, offset, limit).to_vec();
+            let selection_mode = !state.selected.is_empty();
             for (i, t) in page.iter().enumerate() {
                 let num = range.start + i + 1;
+                let mut is_selected = state.selected.contains(&t.id);
                 let (resp, add_q) = track_row(ui, num, t);
+
+                // Click-and-hold to enter / extend multi-select.
+                let lp_id = ui.make_persistent_id(("track_lp", t.id));
+                let lp = super::check_long_press(ui, &resp, lp_id);
+                if lp.just_fired {
+                    toggle_select = Some(t.id);
+                    // Reflect the toggle visually NOW — the mutation only
+                    // lands after the scroll-area closure returns.
+                    is_selected = !is_selected;
+                }
+                if is_selected {
+                    super::paint_selected_outline(ui, resp.rect);
+                }
+
                 if resp.dragged() {
-                    resp.dnd_set_drag_payload(t.clone());
+                    if is_selected {
+                        let ids: Vec<uuid::Uuid> = state.selected.iter().cloned().collect();
+                        let bundle = db.tracks_by_ids(&ids);
+                        resp.dnd_set_drag_payload(bundle);
+                    } else {
+                        resp.dnd_set_drag_payload(t.clone());
+                    }
                 }
                 if add_q {
                     hit = Some((super::RowAction::AddToQueue, range.start + i, t.clone()));
+                } else if lp.suppress_click {
+                    // Either the long-press just fired, or the user is still
+                    // holding — either way, don't fire click/double-click.
+                } else if selection_mode {
+                    // While anything is selected, a plain click toggles
+                    // membership instead of drilling/playing.
+                    if resp.clicked() {
+                        toggle_select = Some(t.id);
+                    } else if let Some(a) = super::row_actions(&resp, playlists) {
+                        // Right-click context menu still works on a single row.
+                        hit = Some((a, range.start + i, t.clone()));
+                    }
                 } else if let Some(a) = super::row_actions(&resp, playlists) {
                     hit = Some((a, range.start + i, t.clone()));
                 }
             }
         });
+
+    if let Some(id) = toggle_select {
+        if !state.selected.insert(id) {
+            state.selected.remove(&id);
+        }
+    }
 
     if let Some((a, _global, track)) = hit {
         action = Some(match a {

@@ -51,15 +51,24 @@ enum Cmd {
     Stop,
     Seek(f64),
     SeekRel(f64),
+    /// Pre-open the next file so when the current track hits EOF we can swap
+    /// in zero-gap. `None` clears any pending preload (e.g. end of queue).
+    PreloadNext(Option<PathBuf>),
     Shutdown,
 }
 
 struct Shared {
     playing: AtomicBool,
     has_track: AtomicBool,
-    /// Set true when a track reaches its end naturally — the App polls this to
-    /// advance the queue, then calls `take_ended()`.
+    /// Set true when a track reaches its end naturally AND there was no
+    /// gapless preload to swap in — the App polls this to advance the queue
+    /// the old way (load+play next). Cleared via [`take_ended`].
     ended: AtomicBool,
+    /// Set true when the engine has already swapped to a preloaded next track
+    /// at the EOF boundary (gapless). The App polls this to advance the queue
+    /// cursor / session history WITHOUT calling load() again. Cleared via
+    /// [`take_advanced`].
+    advanced: AtomicBool,
     position_ms: AtomicU64,
     duration_ms: AtomicU64,
     /// >0 overrides the decoded duration (audiobook authoritative duration).
@@ -79,6 +88,7 @@ impl Engine {
             playing: AtomicBool::new(false),
             has_track: AtomicBool::new(false),
             ended: AtomicBool::new(false),
+            advanced: AtomicBool::new(false),
             position_ms: AtomicU64::new(0),
             duration_ms: AtomicU64::new(0),
             duration_override_ms: AtomicU64::new(0),
@@ -164,6 +174,17 @@ impl Engine {
     pub fn take_ended(&self) -> bool {
         self.shared.ended.swap(false, Ordering::Relaxed)
     }
+    /// Consume the gapless-advanced flag — returns true exactly once per
+    /// gapless transition. The engine has already swapped in the next track;
+    /// the App still needs to bump the queue cursor / session history.
+    pub fn take_advanced(&self) -> bool {
+        self.shared.advanced.swap(false, Ordering::Relaxed)
+    }
+    /// Pre-open the next file so the EOF boundary is gapless. Pass `None` to
+    /// drop any pending preload (e.g. end of queue, repeat=None).
+    pub fn preload_next(&self, path: Option<PathBuf>) {
+        let _ = self.tx.send(Cmd::PreloadNext(path));
+    }
 }
 
 impl Drop for Engine {
@@ -246,6 +267,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
     let _ = stream.play(); // stream always running; silence when paused
 
     let mut track: Option<Track> = None;
+    let mut next_track: Option<Track> = None;
 
     loop {
         // Drain all pending commands first.
@@ -255,6 +277,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
                 Ok(cmd) => handle_cmd(
                     cmd,
                     &mut track,
+                    &mut next_track,
                     &shared,
                     &ring,
                     &played_frames,
@@ -268,26 +291,40 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
         // Keep the ring topped up while playing.
         let playing = shared.playing.load(Ordering::Relaxed);
         if playing {
+            let mut hit_eof = false;
             if let Some(t) = track.as_mut() {
                 let want = (dev_rate as usize) * dev_ch; // ~1 s buffered
-                let mut produced = false;
                 while ring.lock().unwrap().len() < want {
-                    if decode_step(t, &ring, dev_rate, dev_ch) {
-                        produced = true;
-                    } else {
-                        // EOF
-                        shared.playing.store(false, Ordering::Relaxed);
-                        shared.ended.store(true, Ordering::Relaxed);
+                    if !decode_step(t, &ring, dev_rate, dev_ch) {
+                        hit_eof = true;
                         break;
                     }
                 }
-                let _ = produced;
                 // Position = where this segment started + frames the device ate.
+                // After a gapless swap, base_secs is set to a small negative
+                // (the ring still holds the old track's tail), so position
+                // clamps to 0 until the new track's audio actually starts.
                 let pf = played_frames.load(Ordering::Relaxed);
-                let pos = t.base_secs + pf as f64 / dev_rate as f64;
+                let pos = (t.base_secs + pf as f64 / dev_rate as f64).max(0.0);
                 shared
                     .position_ms
                     .store((pos * 1000.0) as u64, Ordering::Relaxed);
+            }
+            if hit_eof {
+                if next_track.is_some() {
+                    gapless_swap(
+                        &mut track,
+                        &mut next_track,
+                        &ring,
+                        &played_frames,
+                        &shared,
+                        dev_rate,
+                        dev_ch,
+                    );
+                } else {
+                    shared.playing.store(false, Ordering::Relaxed);
+                    shared.ended.store(true, Ordering::Relaxed);
+                }
             }
         }
 
@@ -295,10 +332,58 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
     }
 }
 
+/// Promote `next_track` into `track` without touching the ring, so the cpal
+/// callback never sees silence. The new track's `base_secs` is set to a small
+/// negative value matching the buffered audio still in the ring, so the
+/// `position_ms` calculation rests at 0 until the swap is audible.
+fn gapless_swap(
+    track: &mut Option<Track>,
+    next_track: &mut Option<Track>,
+    ring: &Ring,
+    played: &Arc<AtomicU64>,
+    shared: &Arc<Shared>,
+    dev_rate: u32,
+    dev_ch: usize,
+) {
+    let Some(mut new_t) = next_track.take() else {
+        return;
+    };
+    // Frames still queued from the OLD track — the cpal callback will drain
+    // those before any sample from the new track plays. Offset base_secs by
+    // that lead time so `pos` reads 0 once we DO start hearing the new track.
+    let ring_frames = ring.lock().unwrap().len() / dev_ch.max(1);
+    let lead_secs = ring_frames as f64 / dev_rate as f64;
+    new_t.base_secs = -lead_secs;
+    // Reset the played counter so it represents frames since the swap point.
+    played.store(0, Ordering::Relaxed);
+    // Publish the new track's metadata + duration (the override is cleared —
+    // gapless is music-only, audiobooks never preload).
+    let dur = new_t
+        .format
+        .tracks()
+        .iter()
+        .find(|x| x.id == new_t.track_id)
+        .and_then(|x| {
+            x.codec_params
+                .n_frames
+                .zip(x.codec_params.sample_rate)
+                .map(|(n, sr)| n as f64 / sr as f64)
+        })
+        .unwrap_or(0.0);
+    shared
+        .duration_ms
+        .store((dur * 1000.0) as u64, Ordering::Relaxed);
+    shared.duration_override_ms.store(0, Ordering::Relaxed);
+    *shared.info.lock().unwrap() = new_t.info.clone();
+    *track = Some(new_t);
+    shared.advanced.store(true, Ordering::Relaxed);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_cmd(
     cmd: Cmd,
     track: &mut Option<Track>,
+    next_track: &mut Option<Track>,
     shared: &Arc<Shared>,
     ring: &Ring,
     played: &Arc<AtomicU64>,
@@ -310,6 +395,9 @@ fn handle_cmd(
             shared.playing.store(false, Ordering::Relaxed);
             ring.lock().unwrap().clear();
             played.store(0, Ordering::Relaxed);
+            // A fresh manual load invalidates any preloaded next — the App
+            // re-sends `PreloadNext` afterward if appropriate.
+            *next_track = None;
             match open_track(&path, dev_rate, dev_ch) {
                 Ok(mut t) => {
                     let dur = t
@@ -368,12 +456,25 @@ fn handle_cmd(
             played.store(0, Ordering::Relaxed);
             shared.position_ms.store(0, Ordering::Relaxed);
             *track = None;
+            *next_track = None;
         }
         Cmd::Seek(secs) => seek_to(track, shared, ring, played, secs),
         Cmd::SeekRel(delta) => {
             let cur = shared.position_ms.load(Ordering::Relaxed) as f64 / 1000.0;
             seek_to(track, shared, ring, played, (cur + delta).max(0.0));
         }
+        Cmd::PreloadNext(path) => match path {
+            // Open the file eagerly so the EOF swap is a cheap pointer move.
+            // Errors swallowed: if we can't preload, EOF falls back to ended.
+            Some(p) => match open_track(&p, dev_rate, dev_ch) {
+                Ok(t) => *next_track = Some(t),
+                Err(e) => {
+                    eprintln!("engine: preload failed: {e}");
+                    *next_track = None;
+                }
+            },
+            None => *next_track = None,
+        },
         Cmd::Shutdown => {}
     }
 }

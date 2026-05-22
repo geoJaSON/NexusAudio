@@ -40,7 +40,14 @@ pub fn show(
         if let Some(shuffle) = bulk {
             return Some(ViewAction::Play { list, index: 0, shuffle });
         }
-        let pick = track_list(ui, &list, playlists);
+        if let Some(sa) = super::selection_toolbar(ui, state.selected.len(), playlists) {
+            let ids: Vec<uuid::Uuid> = state.selected.iter().cloned().collect();
+            let tracks = db.tracks_by_ids(&ids);
+            if let Some(a) = super::selection_to_view_action(sa, tracks) {
+                return Some(a);
+            }
+        }
+        let pick = track_list(ui, db, state, &list, playlists);
         return super::list_action(list, pick);
     }
 
@@ -114,16 +121,23 @@ pub fn show(
 
 /// Plain (non-virtualized) track listing for album/artist drill-downs.
 /// Returns the row index and its action (double-click or context menu).
+/// Each row is a dnd drag source (single Track or, while in multi-select,
+/// the whole selection) and supports click-and-hold multi-select.
 pub fn track_list(
     ui: &mut egui::Ui,
+    db: &Db,
+    state: &mut LibraryUi,
     tracks: &[Track],
     playlists: super::Playlists,
 ) -> Option<(usize, super::RowAction)> {
     let mut clicked = None;
+    let mut toggle_select: Option<uuid::Uuid> = None;
+    let selection_mode = !state.selected.is_empty();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for (i, t) in tracks.iter().enumerate() {
+                let mut is_selected = state.selected.contains(&t.id);
                 let mut add_q = false;
                 let row = super::list_row_actions(
                     ui,
@@ -172,14 +186,48 @@ pub fn track_list(
                         }
                     },
                 );
+
+                let lp_id = ui.make_persistent_id(("drill_lp", t.id));
+                let lp = super::check_long_press(ui, &row, lp_id);
+                if lp.just_fired {
+                    toggle_select = Some(t.id);
+                    is_selected = !is_selected;
+                }
+                if is_selected {
+                    super::paint_selected_outline(ui, row.rect);
+                }
+
+                if row.dragged() {
+                    if is_selected {
+                        let ids: Vec<uuid::Uuid> = state.selected.iter().cloned().collect();
+                        let bundle = db.tracks_by_ids(&ids);
+                        row.dnd_set_drag_payload(bundle);
+                    } else {
+                        row.dnd_set_drag_payload(t.clone());
+                    }
+                }
+
                 if add_q {
                     clicked = Some((i, super::RowAction::AddToQueue));
+                } else if lp.suppress_click {
+                    // long-press in progress — swallow trailing click
+                } else if selection_mode {
+                    if row.clicked() {
+                        toggle_select = Some(t.id);
+                    } else if let Some(a) = super::row_actions(&row, playlists) {
+                        clicked = Some((i, a));
+                    }
                 } else if let Some(a) = super::row_actions(&row, playlists) {
                     clicked = Some((i, a));
                 }
                 ui.separator();
             }
         });
+    if let Some(id) = toggle_select {
+        if !state.selected.insert(id) {
+            state.selected.remove(&id);
+        }
+    }
     clicked
 }
 

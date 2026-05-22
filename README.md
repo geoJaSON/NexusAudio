@@ -79,3 +79,7 @@ cargo run --bin spike -- /path/to/file.m4b 15120
 
 - Linux with ALSA (or PulseAudio/PipeWire via ALSA compatibility)
 - A Wayland or X11 desktop session (eframe/winit)
+
+## Packaging (planned)
+
+A `.deb` installer is not built yet. See [`packaging/debian/README.md`](packaging/debian/README.md) for step-by-step instructions. Windows uses `NexusAudio.iss` (Inno Setup).

@@ -59,6 +59,23 @@ impl Queue {
         self.pos.and_then(|p| self.order.get(p)).map(|&i| &self.items[i])
     }
 
+    /// What [`next`] WOULD return, without mutating the cursor. Used by the
+    /// engine's gapless preload to know which file to open ahead of EOF.
+    pub fn peek_next(&self) -> Option<&Track> {
+        let n = self.order.len();
+        if n == 0 {
+            return None;
+        }
+        let next_pos = match (self.pos, &self.repeat) {
+            (Some(p), RepeatMode::One) => Some(p),
+            (Some(p), _) if p + 1 < n => Some(p + 1),
+            (Some(_), RepeatMode::All) => Some(0),
+            (Some(_), RepeatMode::None) => None,
+            (None, _) => Some(0),
+        };
+        next_pos.and_then(|p| self.order.get(p)).map(|&i| &self.items[i])
+    }
+
     pub fn next(&mut self) -> Option<&Track> {
         let n = self.order.len();
         if n == 0 {

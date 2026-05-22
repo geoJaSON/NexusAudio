@@ -122,13 +122,6 @@ pub fn show(
                 {
                     cmd = Some(PlayerCmd::CycleRepeat);
                 }
-                if ui
-                    .button(RichText::new("QUEUE").size(10.0).color(CRT_MID))
-                    .on_hover_text("Toggle queue (Q)")
-                    .clicked()
-                {
-                    cmd = Some(PlayerCmd::ToggleQueue);
-                }
             });
             ui.label(
                 RichText::new(format!("{} / {}", fmt(pos), fmt(dur)))

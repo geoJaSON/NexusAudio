@@ -386,6 +386,36 @@ impl App {
                 }
             }
         }
+        self.update_preload();
+    }
+
+    /// Keep the engine's gapless preload slot in sync with `queue.peek_next()`.
+    /// Audiobooks never preload (each book is its own context, not a queue).
+    fn update_preload(&self) {
+        if self.current_book.is_some() {
+            self.engine.preload_next(None);
+            return;
+        }
+        let next_path = self.queue.peek_next().map(|t| t.path.clone());
+        self.engine.preload_next(next_path);
+    }
+
+    /// React to the engine's gapless advance signal: it already swapped to the
+    /// preloaded next file; we only need to move the queue cursor + session
+    /// history forward, and stage the new "after-next" preload.
+    fn on_gapless_advance(&mut self) {
+        if self.queue.next().is_some() {
+            if let Some(t) = self.queue.current().cloned() {
+                if self.session_history.last().map(|p| p.id) != Some(t.id) {
+                    self.session_history.push(t);
+                    if self.session_history.len() > 300 {
+                        self.session_history.remove(0);
+                    }
+                }
+            }
+            self.update_preload();
+            self.save_queue();
+        }
     }
 
     /// Build the player-bar "now playing" from the current book (with chapter)
@@ -459,6 +489,7 @@ impl App {
                 } else {
                     self.queue.enqueue(track);
                 }
+                self.update_preload();
                 self.save_queue();
             }
             ViewAction::QueueJump(i) => {
@@ -469,10 +500,12 @@ impl App {
             }
             ViewAction::QueueRemove(i) => {
                 self.queue.remove_upcoming(i);
+                self.update_preload();
                 self.save_queue();
             }
             ViewAction::QueueMove { i, up } => {
                 self.queue.move_upcoming(i, up);
+                self.update_preload();
                 self.save_queue();
             }
             ViewAction::QueueClear => {
@@ -632,6 +665,36 @@ impl App {
                 }
             }
             ViewAction::SettingsChanged => self.save_settings(),
+            ViewAction::ToggleQueuePanel => {
+                self.show_queue = !self.show_queue;
+            }
+            ViewAction::BulkEnqueue(tracks) => {
+                if !tracks.is_empty() {
+                    for t in tracks {
+                        self.queue.enqueue(t);
+                    }
+                    self.lib.selected.clear();
+                    self.update_preload();
+                    self.save_queue();
+                }
+            }
+            ViewAction::BulkAddToPlaylist { playlist, tracks } => {
+                if !tracks.is_empty() {
+                    let id = playlist.unwrap_or_else(|| {
+                        let id = self.playlists.create("NEW PLAYLIST");
+                        self.lib.selected_playlist = Some(id);
+                        id
+                    });
+                    for t in &tracks {
+                        self.playlists.add_track(id, t.id);
+                    }
+                    self.lib.selected.clear();
+                    self.save_playlists();
+                }
+            }
+            ViewAction::ClearSelection => {
+                self.lib.selected.clear();
+            }
             ViewAction::EditTags(t) => {
                 let fmt_opt = |o: Option<u32>| o.map(|v| v.to_string()).unwrap_or_default();
                 self.tag_edit_error = None;
@@ -714,8 +777,14 @@ impl App {
                 }
             }
             PlayerCmd::Seek(s) => self.engine.seek(s),
-            PlayerCmd::ToggleShuffle => self.queue.toggle_shuffle(),
-            PlayerCmd::CycleRepeat => self.queue.cycle_repeat(),
+            PlayerCmd::ToggleShuffle => {
+                self.queue.toggle_shuffle();
+                self.update_preload();
+            }
+            PlayerCmd::CycleRepeat => {
+                self.queue.cycle_repeat();
+                self.update_preload();
+            }
             PlayerCmd::ToggleQueue => {} // handled above
         }
     }
@@ -762,6 +831,12 @@ impl App {
 
     /// Track finished naturally → advance the queue (or end the book).
     fn poll_playback(&mut self) {
+        // Gapless first: engine has already swapped, queue cursor just needs
+        // to catch up. Falls through to legacy `ended` handling for the case
+        // where there was no preload (end of queue, repeat=None tail).
+        if self.engine.take_advanced() {
+            self.on_gapless_advance();
+        }
         if self.engine.take_ended() {
             if self.current_book.is_some() {
                 self.save_resume();
@@ -835,7 +910,7 @@ impl App {
             self.queue.cycle_repeat();
         }
         if k.9 {
-            self.show_queue = !self.show_queue;
+            self.handle_player(PlayerCmd::ToggleQueue);
         }
     }
 
@@ -1071,6 +1146,8 @@ impl eframe::App for App {
         });
 
         let mut sidebar_action = None;
+        let queue_len = self.queue.len();
+        let show_queue = self.show_queue;
         egui::SidePanel::left("sidebar")
             .exact_width(180.0)
             .resizable(false)
@@ -1082,6 +1159,8 @@ impl eframe::App for App {
                     &pls,
                     selected_pl,
                     resume_hint.as_deref(),
+                    show_queue,
+                    queue_len,
                 );
             });
 
