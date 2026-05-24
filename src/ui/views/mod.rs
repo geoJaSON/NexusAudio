@@ -117,7 +117,9 @@ pub struct LongPress {
 pub fn check_long_press(ui: &mut egui::Ui, resp: &egui::Response, flag_id: egui::Id) -> LongPress {
     let mut fired: bool = ui.data(|d| d.get_temp(flag_id).unwrap_or(false));
     let mut just_fired = false;
-    if resp.is_pointer_button_down_on() {
+    // If the pointer has moved past egui's drag threshold, this press is a
+    // drag-and-drop attempt — never let it count as a long-press select.
+    if resp.is_pointer_button_down_on() && !resp.dragged() {
         if !fired {
             let press_start = ui.ctx().input(|i| i.pointer.press_start_time());
             let now = ui.ctx().input(|i| i.time);
@@ -166,56 +168,60 @@ pub enum SelectionAction {
     Clear,
 }
 
-/// Toolbar shown above a track list when one or more tracks are selected.
-/// Returns the chosen bulk action, if any.
+/// Toolbar shown above a track list. Always rendered so the page layout
+/// doesn't jump when a selection begins or ends — buttons are disabled when
+/// nothing is selected. Returns the chosen bulk action, if any.
 pub fn selection_toolbar(
     ui: &mut egui::Ui,
     count: usize,
     playlists: Playlists,
 ) -> Option<SelectionAction> {
-    if count == 0 {
-        return None;
-    }
     let mut act = None;
+    let enabled = count > 0;
     ui.horizontal(|ui| {
         ui.add_space(8.0);
-        ui.label(
-            RichText::new(format!("[{count} SELECTED]"))
-                .size(10.0)
-                .color(AMBER),
-        );
+        let (label_text, label_color) = if enabled {
+            (format!("[{count} SELECTED]"), AMBER)
+        } else {
+            ("[NONE SELECTED]".to_string(), CRT_MID)
+        };
+        ui.label(RichText::new(label_text).size(10.0).color(label_color));
         ui.add_space(4.0);
-        if ui
-            .button(RichText::new("+Q TO QUEUE").size(10.0).color(CRT_GREEN))
-            .on_hover_text("Add selection to the playback queue")
-            .clicked()
-        {
-            act = Some(SelectionAction::AddToQueue);
-        }
-        ui.menu_button(
-            RichText::new("+ TO PLAYLIST").size(10.0).color(CRT_GREEN),
-            |ui| {
-                if ui.button("[ NEW PLAYLIST ]").clicked() {
-                    act = Some(SelectionAction::AddToPlaylist(None));
-                    ui.close_menu();
-                }
-                if !playlists.is_empty() {
-                    ui.separator();
-                }
-                for (id, name) in playlists {
-                    if ui.button(name).clicked() {
-                        act = Some(SelectionAction::AddToPlaylist(Some(*id)));
+        let action_color = if enabled { CRT_GREEN } else { CRT_MID };
+        let clear_color = if enabled { AMBER } else { CRT_MID };
+        ui.add_enabled_ui(enabled, |ui| {
+            if ui
+                .button(RichText::new("+Q TO QUEUE").size(10.0).color(action_color))
+                .on_hover_text("Add selection to the playback queue")
+                .clicked()
+            {
+                act = Some(SelectionAction::AddToQueue);
+            }
+            ui.menu_button(
+                RichText::new("+ TO PLAYLIST").size(10.0).color(action_color),
+                |ui| {
+                    if ui.button("[ NEW PLAYLIST ]").clicked() {
+                        act = Some(SelectionAction::AddToPlaylist(None));
                         ui.close_menu();
                     }
-                }
-            },
-        );
-        if ui
-            .button(RichText::new("CLEAR").size(10.0).color(AMBER))
-            .clicked()
-        {
-            act = Some(SelectionAction::Clear);
-        }
+                    if !playlists.is_empty() {
+                        ui.separator();
+                    }
+                    for (id, name) in playlists {
+                        if ui.button(name).clicked() {
+                            act = Some(SelectionAction::AddToPlaylist(Some(*id)));
+                            ui.close_menu();
+                        }
+                    }
+                },
+            );
+            if ui
+                .button(RichText::new("CLEAR").size(10.0).color(clear_color))
+                .clicked()
+            {
+                act = Some(SelectionAction::Clear);
+            }
+        });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new("HOLD A ROW TO SELECT  ·  CLICK TO TOGGLE")

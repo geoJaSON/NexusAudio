@@ -10,3 +10,5 @@ build.log
 *.db
 *.db-journal
 *.db-wal
+/memory
+/.claude
