@@ -1,13 +1,13 @@
 [Setup]
 AppName=Nexus Audio
-AppVersion=2.4.1
+AppVersion=2.5.0
 DefaultDirName={autopf}\Nexus Audio
 DefaultGroupName=Nexus Audio
 UninstallDisplayIcon={app}\nexus-audio.exe
 Compression=lzma2
 SolidCompression=yes
 OutputDir=Output
-OutputBaseFilename=nexus_audio_2.4.1_setup
+OutputBaseFilename=nexus_audio_2.5.0_setup
 PrivilegesRequired=lowest
 
 [Files]

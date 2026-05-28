@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, SampleFormat, SizedSample};
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
@@ -74,6 +75,9 @@ struct Shared {
     /// >0 overrides the decoded duration (audiobook authoritative duration).
     duration_override_ms: AtomicU64,
     volume: AtomicU32, // f32 bits, 0.0..=1.0
+    /// One-shot trigger consumed by the output callback to apply a seek
+    /// micro-ramp (reduces clicks on large timeline jumps).
+    seek_ramp: AtomicBool,
     info: Mutex<AudioInfo>,
 }
 
@@ -93,6 +97,7 @@ impl Engine {
             duration_ms: AtomicU64::new(0),
             duration_override_ms: AtomicU64::new(0),
             volume: AtomicU32::new(0.7f32.to_bits()),
+            seek_ramp: AtomicBool::new(false),
             info: Mutex::new(AudioInfo::default()),
         });
         let (tx, rx) = mpsc::channel();
@@ -211,6 +216,14 @@ struct Track {
     info: AudioInfo,
 }
 
+struct GainRamp {
+    gain: f32,
+    step_per_frame: f32,
+    seek_step_per_frame: f32,
+    seek_fast_frames_left: u32,
+    last_frame: Vec<f32>,
+}
+
 fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
     let host = cpal::default_host();
     let Some(device) = host.default_output_device() else {
@@ -232,33 +245,45 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
         let ring = ring.clone();
         let shared = shared.clone();
         let played = played_frames.clone();
-        device.build_output_stream(
-            &cfg,
-            move |out: &mut [f32], _| {
-                let playing = shared.playing.load(Ordering::Relaxed);
-                let vol = f32::from_bits(shared.volume.load(Ordering::Relaxed));
-                if !playing {
-                    out.iter_mut().for_each(|s| *s = 0.0);
-                    return;
-                }
-                let mut buf = ring.lock().unwrap();
-                let mut consumed = 0usize;
-                for s in out.iter_mut() {
-                    match buf.pop_front() {
-                        Some(v) => {
-                            *s = v * vol;
-                            consumed += 1;
-                        }
-                        None => *s = 0.0, // underrun → silence, don't count
-                    }
-                }
-                if consumed > 0 {
-                    played.fetch_add((consumed / dev_ch.max(1)) as u64, Ordering::Relaxed);
-                }
-            },
-            |e| eprintln!("engine cpal error: {e}"),
-            None,
-        )
+        match supported.sample_format() {
+            SampleFormat::F32 => {
+                let mut ramp = GainRamp::new(cfg.sample_rate.0, dev_ch);
+                device.build_output_stream(
+                    &cfg,
+                    move |out: &mut [f32], _| {
+                        render_output(out, &shared, &ring, &played, dev_ch, &mut ramp);
+                    },
+                    |e| eprintln!("engine cpal error: {e}"),
+                    None,
+                )
+            }
+            SampleFormat::I16 => {
+                let mut ramp = GainRamp::new(cfg.sample_rate.0, dev_ch);
+                device.build_output_stream(
+                    &cfg,
+                    move |out: &mut [i16], _| {
+                        render_output(out, &shared, &ring, &played, dev_ch, &mut ramp);
+                    },
+                    |e| eprintln!("engine cpal error: {e}"),
+                    None,
+                )
+            }
+            SampleFormat::U16 => {
+                let mut ramp = GainRamp::new(cfg.sample_rate.0, dev_ch);
+                device.build_output_stream(
+                    &cfg,
+                    move |out: &mut [u16], _| {
+                        render_output(out, &shared, &ring, &played, dev_ch, &mut ramp);
+                    },
+                    |e| eprintln!("engine cpal error: {e}"),
+                    None,
+                )
+            }
+            other => {
+                eprintln!("engine: unsupported output sample format: {other:?}");
+                return;
+            }
+        }
     };
     let Ok(stream) = stream else {
         eprintln!("engine: could not build output stream");
@@ -311,6 +336,9 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
                     .store((pos * 1000.0) as u64, Ordering::Relaxed);
             }
             if hit_eof {
+                if let Some(t) = track.as_mut() {
+                    flush_track_tail(t, &ring, dev_ch);
+                }
                 if next_track.is_some() {
                     gapless_swap(
                         &mut track,
@@ -491,6 +519,7 @@ fn seek_to(
         t.base_secs = secs.max(0.0);
         ring.lock().unwrap().clear();
         played.store(0, Ordering::Relaxed);
+        shared.seek_ramp.store(true, Ordering::Relaxed);
         shared
             .position_ms
             .store((secs.max(0.0) * 1000.0) as u64, Ordering::Relaxed);
@@ -588,8 +617,9 @@ fn decode_step(t: &mut Track, ring: &Ring, dev_rate: u32, dev_ch: usize) -> bool
     let mut l = Vec::with_capacity(frames);
     let mut r = Vec::with_capacity(frames);
     for f in samples.chunks_exact(ch) {
-        l.push(f[0]);
-        r.push(if ch > 1 { f[1] } else { f[0] });
+        let (dl, dr) = downmix_to_stereo(f);
+        l.push(dl);
+        r.push(dr);
     }
 
     let mut out = ring.lock().unwrap();
@@ -617,12 +647,134 @@ fn push_frame(out: &mut VecDeque<f32>, l: f32, r: f32, dev_ch: usize) {
     }
 }
 
+fn render_output<T>(
+    out: &mut [T],
+    shared: &Arc<Shared>,
+    ring: &Ring,
+    played: &Arc<AtomicU64>,
+    dev_ch: usize,
+    ramp: &mut GainRamp,
+) where
+    T: SizedSample + FromSample<f32>,
+{
+    let playing = shared.playing.load(Ordering::Relaxed);
+    if shared.seek_ramp.swap(false, Ordering::Relaxed) {
+        ramp.trigger_seek();
+    }
+    let target = if playing {
+        f32::from_bits(shared.volume.load(Ordering::Relaxed))
+    } else {
+        0.0
+    };
+    let mut buf = ring.lock().unwrap();
+    let mut consumed_frames = 0u64;
+    let ch = dev_ch.max(1);
+    for frame in out.chunks_mut(ch) {
+        ramp.step_toward(target);
+        if playing && buf.len() >= ch {
+            for (i, s) in frame.iter_mut().enumerate() {
+                let raw = buf.pop_front().unwrap_or(0.0);
+                ramp.last_frame[i] = raw;
+                *s = T::from_sample(raw * ramp.gain);
+            }
+            consumed_frames += 1;
+        } else {
+            for (i, s) in frame.iter_mut().enumerate() {
+                *s = T::from_sample(ramp.last_frame[i] * ramp.gain);
+            }
+        }
+    }
+    if consumed_frames > 0 {
+        played.fetch_add(consumed_frames, Ordering::Relaxed);
+    }
+}
+
+fn downmix_to_stereo(frame: &[f32]) -> (f32, f32) {
+    match frame.len() {
+        0 => (0.0, 0.0),
+        1 => (frame[0], frame[0]),
+        2 => (frame[0], frame[1]),
+        _ => {
+            // Conservative ITU-like downmix so center/surround content is kept
+            // instead of being dropped when source channels > 2.
+            let fl = frame[0];
+            let fr = frame[1];
+            let fc = frame.get(2).copied().unwrap_or(0.0);
+            let lfe = frame.get(3).copied().unwrap_or(0.0);
+            let sl = frame.get(4).copied().unwrap_or(0.0);
+            let sr = frame.get(5).copied().unwrap_or(0.0);
+            let rl = frame.get(6).copied().unwrap_or(0.0);
+            let rr = frame.get(7).copied().unwrap_or(0.0);
+
+            let mut l = fl + 0.707 * fc + 0.5 * lfe + 0.707 * sl + 0.707 * rl;
+            let mut r = fr + 0.707 * fc + 0.5 * lfe + 0.707 * sr + 0.707 * rr;
+
+            for &extra in frame.iter().skip(8) {
+                let e = 0.5 * extra;
+                l += e;
+                r += e;
+            }
+
+            let peak = l.abs().max(r.abs());
+            if peak > 1.0 {
+                l /= peak;
+                r /= peak;
+            }
+            (l, r)
+        }
+    }
+}
+
+fn flush_track_tail(t: &mut Track, ring: &Ring, dev_ch: usize) {
+    if let Some(rs) = t.resampler.as_mut() {
+        let mut out = ring.lock().unwrap();
+        rs.drain_into(dev_ch, &mut out);
+    }
+}
+
+impl GainRamp {
+    fn new(sample_rate: u32, dev_ch: usize) -> Self {
+        // 8 ms linear ramp: immediate-feeling controls without hard steps.
+        let frames = (sample_rate as f32 * 0.008).max(1.0);
+        // 4 ms seek ramp for fast "duck then recover" after timeline jumps.
+        let seek_frames = (sample_rate as f32 * 0.004).max(1.0);
+        Self {
+            gain: 0.0,
+            step_per_frame: 1.0 / frames,
+            seek_step_per_frame: 1.0 / seek_frames,
+            seek_fast_frames_left: 0,
+            last_frame: vec![0.0; dev_ch.max(1)],
+        }
+    }
+
+    fn step_toward(&mut self, target: f32) {
+        let target = target.clamp(0.0, 1.0);
+        let step = if self.seek_fast_frames_left > 0 {
+            self.seek_fast_frames_left -= 1;
+            self.seek_step_per_frame
+        } else {
+            self.step_per_frame
+        };
+        if self.gain < target {
+            self.gain = (self.gain + step).min(target);
+        } else if self.gain > target {
+            self.gain = (self.gain - step).max(target);
+        }
+    }
+
+    fn trigger_seek(&mut self) {
+        self.gain = 0.0;
+        self.seek_fast_frames_left = 256;
+    }
+}
+
 // ─────────────────────── proper sinc resampler ───────────────────
 
 const CHUNK: usize = 1024;
 
 struct Resamp {
     rs: SincFixedIn<f32>,
+    ratio: f64,
     acc_l: Vec<f32>,
     acc_r: Vec<f32>,
 }
@@ -643,7 +795,12 @@ impl Resamp {
             CHUNK,
             2,
         )?;
-        Ok(Self { rs, acc_l: Vec::new(), acc_r: Vec::new() })
+        Ok(Self {
+            rs,
+            ratio: dev_rate as f64 / src_rate as f64,
+            acc_l: Vec::new(),
+            acc_r: Vec::new(),
+        })
     }
 
     fn reset(&mut self) {
@@ -664,6 +821,27 @@ impl Resamp {
                 for i in 0..ol.len() {
                     push_frame(out, ol[i], or[i], dev_ch);
                 }
+            }
+        }
+    }
+
+    /// Drain any non-empty tail by zero-padding one final chunk and
+    /// trimming to the expected resampled frame count.
+    fn drain_into(&mut self, dev_ch: usize, out: &mut VecDeque<f32>) {
+        if self.acc_l.is_empty() {
+            return;
+        }
+        let n = self.acc_l.len();
+        let mut inl = std::mem::take(&mut self.acc_l);
+        let mut inr = std::mem::take(&mut self.acc_r);
+        inl.resize(CHUNK, 0.0);
+        inr.resize(CHUNK, 0.0);
+        if let Ok(res) = self.rs.process(&[inl, inr], None) {
+            let expected = ((n as f64) * self.ratio).ceil() as usize;
+            let (ol, or) = (&res[0], &res[1]);
+            let keep = expected.min(ol.len()).min(or.len());
+            for i in 0..keep {
+                push_frame(out, ol[i], or[i], dev_ch);
             }
         }
     }

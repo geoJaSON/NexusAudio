@@ -82,4 +82,10 @@ cargo run --bin spike -- /path/to/file.m4b 15120
 
 ## Packaging (planned)
 
-A `.deb` installer is not built yet. See [`packaging/debian/README.md`](packaging/debian/README.md) for step-by-step instructions. Windows uses `NexusAudio.iss` (Inno Setup).
+Build a `.deb` after `cargo build --release`:
+
+```bash
+./scripts/build-deb.sh
+```
+
+See [`packaging/debian/README.md`](packaging/debian/README.md) for details. Windows uses `NexusAudio.iss` (Inno Setup).

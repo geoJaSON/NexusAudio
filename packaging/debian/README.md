@@ -21,7 +21,7 @@ sudo apt-get install -y dpkg-dev
 From the repo root (`NexusAudio/`):
 
 ```bash
-VERSION=2.4.1
+VERSION=2.5.0
 ARCH=amd64   # or: dpkg --print-architecture
 
 ROOT=packaging/debian/stage
@@ -150,7 +150,7 @@ override_dh_auto_install:
 Example **`debian/changelog`** (first entry):
 
 ```
-nexus-audio (2.4.1-1) unstable; urgency=medium
+nexus-audio (2.5.0-1) unstable; urgency=medium
 
   * Initial Debian package.
 
@@ -164,12 +164,12 @@ nexus-audio (2.4.1-1) unstable; urgency=medium
 dpkg-buildpackage -b -us -uc
 ```
 
-Output (parent directory): `../nexus-audio_2.4.1-1_amd64.deb`
+Output (parent directory): `../nexus-audio_2.5.0-1_amd64.deb`
 
 Install:
 
 ```bash
-sudo apt install ../nexus-audio_2.4.1-1_amd64.deb
+sudo apt install ../nexus-audio_2.5.0-1_amd64.deb
 ```
 
 `dh_shlibdeps` (via debhelper) will scan the binary and fill in `Depends` automatically — more accurate than hand-writing after GUI/link changes.
@@ -192,13 +192,19 @@ convert -background none icon.ico[0] nexus-audio.png
 
 ## Version bumps
 
-Keep these in sync with `Cargo.toml` (`version = "2.4.1"`):
+Keep these in sync with `Cargo.toml` (`version = "2.5.0"`):
 
 - `DEBIAN/control` `Version:` (Option A)
 - `debian/changelog` (Option B)
 - Output `.deb` filename
 
-Debian convention: upstream `2.4.1` + package revision `2.4.1-1`, `2.4.1-2`, …
+Debian convention: upstream `2.5.0` + package revision `2.5.0-1`, `2.5.0-2`, …
+
+Or from the repo root:
+
+```bash
+./scripts/build-deb.sh
+```
 
 ---
 

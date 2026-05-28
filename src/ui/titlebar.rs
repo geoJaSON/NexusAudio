@@ -15,7 +15,10 @@ pub fn show(ui: &mut egui::Ui, eq_enabled: bool, is_playing: bool) {
         ui.add_space(12.0);
 
         ui.label(
-            RichText::new("* SYS READY  |  BUILD 2.4.1  |  SYMPHONIA ENGINE ACTIVE")
+            RichText::new(format!(
+                "* SYS READY  |  BUILD {}  |  SYMPHONIA ENGINE ACTIVE",
+                env!("CARGO_PKG_VERSION")
+            ))
                 .size(10.0)
                 .color(CRT_DIM),
         );
