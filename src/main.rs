@@ -52,9 +52,10 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    let app_title = format!("NEXUS//AUDIO v{}", env!("CARGO_PKG_VERSION"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("NEXUS//AUDIO v2.4.1")
+            .with_title(app_title.clone())
             .with_inner_size([1100.0, 720.0])
             .with_min_inner_size([820.0, 560.0])
             .with_icon(std::sync::Arc::new(app_icon())),
@@ -62,7 +63,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "NEXUS//AUDIO v2.4.1",
+        &app_title,
         options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     )

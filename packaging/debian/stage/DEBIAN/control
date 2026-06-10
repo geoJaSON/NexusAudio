@@ -1,9 +1,9 @@
 Package: nexus-audio
-Version: 2.4.1
+Version: 2.5.0
 Section: sound
 Priority: optional
 Architecture: amd64
-Installed-Size: 22220
+Installed-Size: 22288
 Maintainer: Jason Jordan <jasjordan@proton.me>
 Homepage: https://github.com/jasjordan/NexusAudio
 Depends: libasound2 | libasound2t64, libc6, libgcc-s1
