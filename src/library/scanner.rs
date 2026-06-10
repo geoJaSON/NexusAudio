@@ -105,7 +105,7 @@ pub fn spawn_scan(
             }
         }
 
-        let removed = db.prune_missing().unwrap_or(0);
+        let removed = db.prune_missing(&folders).unwrap_or(0);
         let _ = tx.send(ScanMsg::Done { added, updated, removed, errors });
     });
     rx

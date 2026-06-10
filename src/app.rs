@@ -476,10 +476,11 @@ impl App {
             }
             ViewAction::ScanAll => self.start_scan(),
             ViewAction::Play { list, index, shuffle } => {
+                // Sync the mode BEFORE set() builds the order — the old
+                // toggle-after dance rebuilt the order twice and left the
+                // cursor stranded mid-list.
+                self.queue.shuffle = shuffle;
                 self.queue.set(list, index);
-                if shuffle != self.queue.shuffle {
-                    self.queue.toggle_shuffle();
-                }
                 self.play_current();
                 self.save_queue();
             }
@@ -903,11 +904,13 @@ impl App {
         if k.6 {
             self.engine.add_volume(-0.05);
         }
+        // Route through handle_player so the gapless preload is re-staged
+        // for the new play order / repeat mode.
         if k.7 {
-            self.queue.toggle_shuffle();
+            self.handle_player(PlayerCmd::ToggleShuffle);
         }
         if k.8 {
-            self.queue.cycle_repeat();
+            self.handle_player(PlayerCmd::CycleRepeat);
         }
         if k.9 {
             self.handle_player(PlayerCmd::ToggleQueue);

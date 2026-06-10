@@ -13,9 +13,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, SampleFormat, SizedSample};
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
@@ -74,6 +75,9 @@ struct Shared {
     /// >0 overrides the decoded duration (audiobook authoritative duration).
     duration_override_ms: AtomicU64,
     volume: AtomicU32, // f32 bits, 0.0..=1.0
+    /// One-shot trigger consumed by the output callback to apply a seek
+    /// micro-ramp (reduces clicks on large timeline jumps).
+    seek_ramp: AtomicBool,
     info: Mutex<AudioInfo>,
 }
 
@@ -93,6 +97,7 @@ impl Engine {
             duration_ms: AtomicU64::new(0),
             duration_override_ms: AtomicU64::new(0),
             volume: AtomicU32::new(0.7f32.to_bits()),
+            seek_ramp: AtomicBool::new(false),
             info: Mutex::new(AudioInfo::default()),
         });
         let (tx, rx) = mpsc::channel();
@@ -211,65 +216,90 @@ struct Track {
     info: AudioInfo,
 }
 
-fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
-    let host = cpal::default_host();
-    let Some(device) = host.default_output_device() else {
-        eprintln!("engine: no output device");
-        return;
-    };
-    let Ok(supported) = device.default_output_config() else {
-        eprintln!("engine: no default output config");
-        return;
-    };
-    let dev_rate = supported.sample_rate().0;
-    let dev_ch = supported.channels() as usize;
-    let cfg: cpal::StreamConfig = supported.config();
+struct GainRamp {
+    gain: f32,
+    step_per_frame: f32,
+    seek_step_per_frame: f32,
+    seek_fast_frames_left: u32,
+    last_frame: Vec<f32>,
+}
 
+/// A live cpal output stream plus the device geometry it was built with.
+/// Recreated whenever the stream dies — system sleep/resume, device unplug,
+/// or a default-device change all invalidate a WASAPI stream permanently.
+struct Output {
+    _stream: cpal::Stream,
+    rate: u32,
+    ch: usize,
+    /// Set by the cpal error callback; the audio thread rebuilds on sight.
+    failed: Arc<AtomicBool>,
+}
+
+fn build_output(ring: &Ring, shared: &Arc<Shared>, played: &Arc<AtomicU64>) -> Option<Output> {
+    let host = cpal::default_host();
+    let device = host.default_output_device()?;
+    let supported = device.default_output_config().ok()?;
+    let rate = supported.sample_rate().0;
+    let ch = supported.channels() as usize;
+    let cfg: cpal::StreamConfig = supported.config();
+    let failed = Arc::new(AtomicBool::new(false));
+
+    macro_rules! stream_for {
+        ($t:ty) => {{
+            let ring = ring.clone();
+            let shared = shared.clone();
+            let played = played.clone();
+            let err = failed.clone();
+            let mut ramp = GainRamp::new(rate, ch);
+            device.build_output_stream(
+                &cfg,
+                move |out: &mut [$t], _| {
+                    render_output(out, &shared, &ring, &played, ch, &mut ramp);
+                },
+                move |e| {
+                    eprintln!("engine cpal error: {e}");
+                    err.store(true, Ordering::Relaxed);
+                },
+                None,
+            )
+        }};
+    }
+    let stream = match supported.sample_format() {
+        SampleFormat::F32 => stream_for!(f32),
+        SampleFormat::I16 => stream_for!(i16),
+        SampleFormat::U16 => stream_for!(u16),
+        other => {
+            eprintln!("engine: unsupported output sample format: {other:?}");
+            return None;
+        }
+    }
+    .ok()?;
+    stream.play().ok()?; // stream always running; silence when paused
+    Some(Output { _stream: stream, rate, ch, failed })
+}
+
+fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
     let ring: Ring = Arc::new(Mutex::new(VecDeque::new()));
     let played_frames = Arc::new(AtomicU64::new(0));
 
-    let stream = {
-        let ring = ring.clone();
-        let shared = shared.clone();
-        let played = played_frames.clone();
-        device.build_output_stream(
-            &cfg,
-            move |out: &mut [f32], _| {
-                let playing = shared.playing.load(Ordering::Relaxed);
-                let vol = f32::from_bits(shared.volume.load(Ordering::Relaxed));
-                if !playing {
-                    out.iter_mut().for_each(|s| *s = 0.0);
-                    return;
-                }
-                let mut buf = ring.lock().unwrap();
-                let mut consumed = 0usize;
-                for s in out.iter_mut() {
-                    match buf.pop_front() {
-                        Some(v) => {
-                            *s = v * vol;
-                            consumed += 1;
-                        }
-                        None => *s = 0.0, // underrun → silence, don't count
-                    }
-                }
-                if consumed > 0 {
-                    played.fetch_add((consumed / dev_ch.max(1)) as u64, Ordering::Relaxed);
-                }
-            },
-            |e| eprintln!("engine cpal error: {e}"),
-            None,
-        )
-    };
-    let Ok(stream) = stream else {
-        eprintln!("engine: could not build output stream");
-        return;
-    };
-    let _ = stream.play(); // stream always running; silence when paused
+    let mut output = build_output(&ring, &shared, &played_frames);
+    if output.is_none() {
+        eprintln!("engine: no output device — will keep retrying");
+    }
 
     let mut track: Option<Track> = None;
     let mut next_track: Option<Track> = None;
 
+    // Stall watchdog state: if we're playing with a full ring but the device
+    // stops consuming frames (sleep/resume can kill the stream WITHOUT firing
+    // the error callback), treat the stream as dead and rebuild it.
+    let mut last_played = played_frames.load(Ordering::Relaxed);
+    let mut last_progress = Instant::now();
+    let mut last_attempt: Option<Instant> = None;
+
     loop {
+        let (dev_rate, dev_ch) = output.as_ref().map(|o| (o.rate, o.ch)).unwrap_or((48_000, 2));
+
         // Drain all pending commands first.
         loop {
             match rx.try_recv() {
@@ -288,9 +318,60 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
             }
         }
 
-        // Keep the ring topped up while playing.
         let playing = shared.playing.load(Ordering::Relaxed);
-        if playing {
+
+        // ---- output health: error flag or stalled consumption → rebuild ----
+        let mut dead = output.is_none();
+        if let Some(o) = &output {
+            if o.failed.load(Ordering::Relaxed) {
+                dead = true;
+            } else if playing {
+                let pf = played_frames.load(Ordering::Relaxed);
+                let buffered = ring.lock().unwrap().len();
+                if pf != last_played || buffered < o.ch {
+                    last_played = pf;
+                    last_progress = Instant::now();
+                } else if last_progress.elapsed() > Duration::from_millis(1500) {
+                    eprintln!("engine: output stalled — rebuilding stream");
+                    dead = true;
+                }
+            } else {
+                last_played = played_frames.load(Ordering::Relaxed);
+                last_progress = Instant::now();
+            }
+        }
+        if dead && last_attempt.map_or(true, |t| t.elapsed() >= Duration::from_millis(500)) {
+            last_attempt = Some(Instant::now());
+            let old_rate = output.as_ref().map(|o| o.rate);
+            drop(output.take()); // release the old device handle first
+            output = build_output(&ring, &shared, &played_frames);
+            if let Some(o) = &output {
+                last_played = played_frames.load(Ordering::Relaxed);
+                last_progress = Instant::now();
+                if old_rate != Some(o.rate) {
+                    // Device geometry changed: buffered audio and the track's
+                    // resampler are at the wrong rate. Restart cleanly from
+                    // the current position.
+                    let pos = shared.position_ms.load(Ordering::Relaxed) as f64 / 1000.0;
+                    ring.lock().unwrap().clear();
+                    played_frames.store(0, Ordering::Relaxed);
+                    for t in track.iter_mut().chain(next_track.iter_mut()) {
+                        t.resampler = if t.src_rate != o.rate {
+                            Resamp::new(t.src_rate, o.rate).ok()
+                        } else {
+                            None
+                        };
+                    }
+                    if let Some(t) = track.as_mut() {
+                        seek_track(t, pos);
+                        t.base_secs = pos;
+                    }
+                }
+            }
+        }
+
+        // Keep the ring topped up while playing.
+        if playing && output.is_some() {
             let mut hit_eof = false;
             if let Some(t) = track.as_mut() {
                 let want = (dev_rate as usize) * dev_ch; // ~1 s buffered
@@ -311,6 +392,9 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
                     .store((pos * 1000.0) as u64, Ordering::Relaxed);
             }
             if hit_eof {
+                if let Some(t) = track.as_mut() {
+                    flush_track_tail(t, &ring, dev_ch);
+                }
                 if next_track.is_some() {
                     gapless_swap(
                         &mut track,
@@ -434,6 +518,9 @@ fn handle_cmd(
                     eprintln!("engine: load failed: {e}");
                     shared.has_track.store(false, Ordering::Relaxed);
                     *track = None;
+                    // Report a natural end so the App advances past the bad
+                    // file instead of stalling the queue silently.
+                    shared.ended.store(true, Ordering::Relaxed);
                 }
             }
         }
@@ -491,6 +578,7 @@ fn seek_to(
         t.base_secs = secs.max(0.0);
         ring.lock().unwrap().clear();
         played.store(0, Ordering::Relaxed);
+        shared.seek_ramp.store(true, Ordering::Relaxed);
         shared
             .position_ms
             .store((secs.max(0.0) * 1000.0) as u64, Ordering::Relaxed);
@@ -555,6 +643,11 @@ fn seek_track(t: &mut Track, secs: f64) {
 
 /// Decode one packet, resample to the device rate, push interleaved stereo into
 /// the ring. Returns false at end of stream.
+///
+/// All decoding/resampling happens into a local staging buffer; the ring lock
+/// is held only for one bulk extend. The cpal callback shares that lock and
+/// must never wait on a slow critical section — holding it across the sinc
+/// resampler was what caused crackle whenever the CPU had a side load.
 fn decode_step(t: &mut Track, ring: &Ring, dev_rate: u32, dev_ch: usize) -> bool {
     let packet = loop {
         match t.format.next_packet() {
@@ -588,32 +681,168 @@ fn decode_step(t: &mut Track, ring: &Ring, dev_rate: u32, dev_ch: usize) -> bool
     let mut l = Vec::with_capacity(frames);
     let mut r = Vec::with_capacity(frames);
     for f in samples.chunks_exact(ch) {
-        l.push(f[0]);
-        r.push(if ch > 1 { f[1] } else { f[0] });
+        let (dl, dr) = downmix_to_stereo(f);
+        l.push(dl);
+        r.push(dr);
     }
 
-    let mut out = ring.lock().unwrap();
+    let mut staged: Vec<f32> = Vec::with_capacity(frames * dev_ch.max(1) + 64);
     match t.resampler.as_mut() {
-        Some(rs) => rs.process_into(&l, &r, dev_ch, &mut out),
+        Some(rs) => rs.process_into(&l, &r, dev_ch, &mut staged),
         None => {
             for i in 0..frames {
-                push_frame(&mut out, l[i], r[i], dev_ch);
+                push_frame(&mut staged, l[i], r[i], dev_ch);
             }
         }
+    }
+    if !staged.is_empty() {
+        ring.lock().unwrap().extend(staged);
     }
     true
 }
 
-fn push_frame(out: &mut VecDeque<f32>, l: f32, r: f32, dev_ch: usize) {
+fn push_frame(out: &mut Vec<f32>, l: f32, r: f32, dev_ch: usize) {
     match dev_ch {
-        1 => out.push_back(0.5 * (l + r)),
+        1 => out.push(0.5 * (l + r)),
         _ => {
-            out.push_back(l);
-            out.push_back(r);
+            out.push(l);
+            out.push(r);
             for _ in 2..dev_ch {
-                out.push_back(0.0);
+                out.push(0.0);
             }
         }
+    }
+}
+
+fn render_output<T>(
+    out: &mut [T],
+    shared: &Arc<Shared>,
+    ring: &Ring,
+    played: &Arc<AtomicU64>,
+    dev_ch: usize,
+    ramp: &mut GainRamp,
+) where
+    T: SizedSample + FromSample<f32>,
+{
+    let playing = shared.playing.load(Ordering::Relaxed);
+    if shared.seek_ramp.swap(false, Ordering::Relaxed) {
+        ramp.trigger_seek();
+    }
+    let target = if playing {
+        f32::from_bits(shared.volume.load(Ordering::Relaxed))
+    } else {
+        0.0
+    };
+    // try_lock, never lock: a realtime audio callback must not block. If the
+    // decode thread briefly owns the ring, render the decaying hold frame for
+    // this period instead of risking a missed deadline (= audible crackle).
+    let mut buf = ring.try_lock().ok();
+    let mut consumed_frames = 0u64;
+    let ch = dev_ch.max(1);
+    for frame in out.chunks_mut(ch) {
+        ramp.step_toward(target);
+        let ready = playing && buf.as_ref().map_or(false, |b| b.len() >= ch);
+        if ready {
+            let b = buf.as_mut().unwrap();
+            for (i, s) in frame.iter_mut().enumerate() {
+                let raw = b.pop_front().unwrap_or(0.0);
+                ramp.last_frame[i] = raw;
+                *s = T::from_sample(raw * ramp.gain);
+            }
+            consumed_frames += 1;
+        } else {
+            // Underrun/pause: decay the held sample toward zero — holding a
+            // DC value flat is itself an audible click when it finally drops.
+            for (i, s) in frame.iter_mut().enumerate() {
+                *s = T::from_sample(ramp.last_frame[i] * ramp.gain);
+                ramp.last_frame[i] *= 0.995;
+            }
+        }
+    }
+    if consumed_frames > 0 {
+        played.fetch_add(consumed_frames, Ordering::Relaxed);
+    }
+}
+
+fn downmix_to_stereo(frame: &[f32]) -> (f32, f32) {
+    match frame.len() {
+        0 => (0.0, 0.0),
+        1 => (frame[0], frame[0]),
+        2 => (frame[0], frame[1]),
+        _ => {
+            // Conservative ITU-like downmix so center/surround content is kept
+            // instead of being dropped when source channels > 2.
+            let fl = frame[0];
+            let fr = frame[1];
+            let fc = frame.get(2).copied().unwrap_or(0.0);
+            let lfe = frame.get(3).copied().unwrap_or(0.0);
+            let sl = frame.get(4).copied().unwrap_or(0.0);
+            let sr = frame.get(5).copied().unwrap_or(0.0);
+            let rl = frame.get(6).copied().unwrap_or(0.0);
+            let rr = frame.get(7).copied().unwrap_or(0.0);
+
+            let mut l = fl + 0.707 * fc + 0.5 * lfe + 0.707 * sl + 0.707 * rl;
+            let mut r = fr + 0.707 * fc + 0.5 * lfe + 0.707 * sr + 0.707 * rr;
+
+            for &extra in frame.iter().skip(8) {
+                let e = 0.5 * extra;
+                l += e;
+                r += e;
+            }
+
+            let peak = l.abs().max(r.abs());
+            if peak > 1.0 {
+                l /= peak;
+                r /= peak;
+            }
+            (l, r)
+        }
+    }
+}
+
+fn flush_track_tail(t: &mut Track, ring: &Ring, dev_ch: usize) {
+    if let Some(rs) = t.resampler.as_mut() {
+        let mut staged = Vec::new();
+        rs.drain_into(dev_ch, &mut staged);
+        if !staged.is_empty() {
+            ring.lock().unwrap().extend(staged);
+        }
+    }
+}
+
+impl GainRamp {
+    fn new(sample_rate: u32, dev_ch: usize) -> Self {
+        // 8 ms linear ramp: immediate-feeling controls without hard steps.
+        let frames = (sample_rate as f32 * 0.008).max(1.0);
+        // 4 ms seek ramp for fast "duck then recover" after timeline jumps.
+        let seek_frames = (sample_rate as f32 * 0.004).max(1.0);
+        Self {
+            gain: 0.0,
+            step_per_frame: 1.0 / frames,
+            seek_step_per_frame: 1.0 / seek_frames,
+            seek_fast_frames_left: 0,
+            last_frame: vec![0.0; dev_ch.max(1)],
+        }
+    }
+
+    fn step_toward(&mut self, target: f32) {
+        let target = target.clamp(0.0, 1.0);
+        let step = if self.seek_fast_frames_left > 0 {
+            self.seek_fast_frames_left -= 1;
+            self.seek_step_per_frame
+        } else {
+            self.step_per_frame
+        };
+        if self.gain < target {
+            self.gain = (self.gain + step).min(target);
+        } else if self.gain > target {
+            self.gain = (self.gain - step).max(target);
+        }
+    }
+
+    fn trigger_seek(&mut self) {
+        self.gain = 0.0;
+        self.seek_fast_frames_left = 256;
     }
 }
 
@@ -623,6 +852,7 @@ const CHUNK: usize = 1024;
 
 struct Resamp {
     rs: SincFixedIn<f32>,
+    ratio: f64,
     acc_l: Vec<f32>,
     acc_r: Vec<f32>,
 }
@@ -643,7 +873,12 @@ impl Resamp {
             CHUNK,
             2,
         )?;
-        Ok(Self { rs, acc_l: Vec::new(), acc_r: Vec::new() })
+        Ok(Self {
+            rs,
+            ratio: dev_rate as f64 / src_rate as f64,
+            acc_l: Vec::new(),
+            acc_r: Vec::new(),
+        })
     }
 
     fn reset(&mut self) {
@@ -653,7 +888,7 @@ impl Resamp {
     }
 
     /// Accumulate, process whole CHUNKs, push interleaved device frames.
-    fn process_into(&mut self, l: &[f32], r: &[f32], dev_ch: usize, out: &mut VecDeque<f32>) {
+    fn process_into(&mut self, l: &[f32], r: &[f32], dev_ch: usize, out: &mut Vec<f32>) {
         self.acc_l.extend_from_slice(l);
         self.acc_r.extend_from_slice(r);
         while self.acc_l.len() >= CHUNK {
@@ -664,6 +899,27 @@ impl Resamp {
                 for i in 0..ol.len() {
                     push_frame(out, ol[i], or[i], dev_ch);
                 }
+            }
+        }
+    }
+
+    /// Drain any non-empty tail by zero-padding one final chunk and
+    /// trimming to the expected resampled frame count.
+    fn drain_into(&mut self, dev_ch: usize, out: &mut Vec<f32>) {
+        if self.acc_l.is_empty() {
+            return;
+        }
+        let n = self.acc_l.len();
+        let mut inl = std::mem::take(&mut self.acc_l);
+        let mut inr = std::mem::take(&mut self.acc_r);
+        inl.resize(CHUNK, 0.0);
+        inr.resize(CHUNK, 0.0);
+        if let Ok(res) = self.rs.process(&[inl, inr], None) {
+            let expected = ((n as f64) * self.ratio).ceil() as usize;
+            let (ol, or) = (&res[0], &res[1]);
+            let keep = expected.min(ol.len()).min(or.len());
+            for i in 0..keep {
+                push_frame(out, ol[i], or[i], dev_ch);
             }
         }
     }

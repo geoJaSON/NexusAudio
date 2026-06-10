@@ -186,7 +186,15 @@ impl Db {
     }
 
     /// Drop rows whose files no longer exist on disk (post-scan prune).
-    pub fn prune_missing(&self) -> Result<usize> {
+    ///
+    /// Only paths under a currently-reachable watch root are considered: if a
+    /// whole root is absent (offline network/external drive), its rows are
+    /// kept — a temporarily unplugged drive must not wipe the library.
+    pub fn prune_missing(&self, roots: &[PathBuf]) -> Result<usize> {
+        let live: Vec<&PathBuf> = roots.iter().filter(|r| r.exists()).collect();
+        if live.is_empty() {
+            return Ok(0);
+        }
         let mut stmt = self.conn.prepare("SELECT id, path FROM tracks")?;
         let rows: Vec<(String, String)> = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
@@ -194,7 +202,8 @@ impl Db {
             .collect();
         let mut removed = 0;
         for (id, p) in rows {
-            if !PathBuf::from(&p).exists() {
+            let pb = PathBuf::from(&p);
+            if live.iter().any(|r| pb.starts_with(r)) && !pb.exists() {
                 self.conn
                     .execute("DELETE FROM tracks WHERE id = ?1", params![id])?;
                 self.conn
